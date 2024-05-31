@@ -10,6 +10,7 @@ use indexmap::IndexMap;
 use indexmap::IndexSet;
 use petgraph::csr::NodeIndex;
 use petgraph::stable_graph::IndexType;
+use petgraph::visit::NodeCount;
 
 use crate::error::FederationError;
 use crate::error::SingleFederationError;
@@ -21,6 +22,8 @@ use crate::query_graph::path_tree::OpPathTree;
 use crate::query_graph::QueryGraph;
 use crate::query_graph::QueryGraphNodeType;
 use crate::query_plan::fetch_dependency_graph::compute_nodes_for_tree;
+use crate::query_plan::fetch_dependency_graph::log_node;
+use crate::query_plan::fetch_dependency_graph::log_node_value;
 use crate::query_plan::fetch_dependency_graph::FetchDependencyGraph;
 use crate::query_plan::fetch_dependency_graph_processor::FetchDependencyGraphProcessor;
 use crate::query_plan::fetch_dependency_graph_processor::FetchDependencyGraphToCostProcessor;
@@ -662,6 +665,7 @@ fn compute_plan_internal(
     parameters: &mut QueryPlanningParameters,
     has_defers: bool,
 ) -> Result<Option<PlanNode>, FederationError> {
+    println!("compute_plan_internal->START");
     let root_kind = parameters.operation.root_kind;
 
     let (main, deferred, primary_selection) = if root_kind == SchemaRootDefinitionKind::Mutation {
@@ -687,7 +691,17 @@ fn compute_plan_internal(
         }
         (main, deferred, primary_selection)
     } else {
+        println!("compute_plan_internal (QUERY)");
         let mut dependency_graph = compute_root_parallel_dependency_graph(parameters, has_defers)?;
+        let node_count = dependency_graph.graph.node_count();
+        println!(
+            "compute_plan_internal->initial dependency graph has {} nodes to reduce and optimize",
+            node_count
+        );
+        let cloned_graph = dependency_graph.clone();
+        for node_id in dependency_graph.graph.node_indices() {
+            log_node(&cloned_graph, node_id, "unknown");
+        }
 
         let (main, deferred) = dependency_graph.process(&mut parameters.processor, root_kind)?;
         // XXX(@goto-bus-stop) Maybe `.defer_tracking` should be on the return value of `process()`..?
@@ -1137,7 +1151,7 @@ type User
             "#,
             "operation.graphql",
         )
-            .unwrap();
+        .unwrap();
 
         let planner = QueryPlanner::new(&supergraph, Default::default()).unwrap();
         let plan = planner.build_query_plan(&document, None).unwrap();
@@ -1195,7 +1209,7 @@ type User
             "#,
             "operation.graphql",
         )
-            .unwrap();
+        .unwrap();
 
         let planner = QueryPlanner::new(&supergraph, Default::default()).unwrap();
         let plan = planner.build_query_plan(&document, None).unwrap();
@@ -1253,7 +1267,7 @@ type User
             "#,
             "operation.graphql",
         )
-            .unwrap();
+        .unwrap();
 
         let planner = QueryPlanner::new(&supergraph, Default::default()).unwrap();
         let plan = planner.build_query_plan(&document, None).unwrap();

@@ -887,7 +887,7 @@ fn it_handles_longer_require_chain() {
 }
 
 #[test]
-#[should_panic(expected = "snapshot assertion")]
+// #[should_panic(expected = "snapshot assertion")]
 // TODO: investigate this failure
 fn it_handles_complex_require_chain() {
     // Another "require chain" test but with more complexity as we have a require on multiple fields, some of which being
