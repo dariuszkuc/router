@@ -681,7 +681,7 @@ fn compute_plan_internal(
             deferred.extend(local_deferred);
             let new_selection = dependency_graph.defer_tracking.primary_selection;
             match primary_selection.as_mut() {
-                Some(selection) => selection.merge_into(new_selection.iter())?,
+                Some(selection) => selection.merge_selection_sets(new_selection.iter())?,
                 None => primary_selection = new_selection,
             }
         }

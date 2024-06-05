@@ -999,6 +999,24 @@ impl Selection {
             Ok(self.clone())
         }
     }
+
+    fn unwrap_unnecessary_inline_fragment(&self, maybe_parent: &CompositeTypeDefinitionPosition) -> SelectionOrSet {
+        println!("Selection->unwrap_unnecessary_inline_fragment->selection {} on {}", self, maybe_parent);
+        match self {
+            Selection::InlineFragment(fragment) => if fragment.is_unnecessary(maybe_parent)
+            {
+                println!("Selection->unwrap_unnecessary_inline_fragment->selection {} on {} was unnecessary merging subselections {}", self, maybe_parent, fragment.selection_set);
+                SelectionOrSet::SelectionSet(fragment.selection_set.clone())
+            } else {
+                println!("Selection->unwrap_unnecessary_inline_fragment->fragment selection {} on {} was necessary", self, maybe_parent);
+                SelectionOrSet::Selection(self.clone())
+            },
+            _ => {
+                println!("Selection->unwrap_unnecessary_inline_fragment->field selection {} on {} was necessary", self, maybe_parent);
+                SelectionOrSet::Selection(self.clone())
+            },
+        }
+    }
 }
 
 impl From<FieldSelection> for Selection {
@@ -2108,7 +2126,7 @@ impl SelectionSet {
             type_position,
             selections: Arc::new(SelectionMap::new()),
         };
-        merged.merge_selections_into(normalized_selections.iter())?;
+        merged.merge_selections(normalized_selections.iter())?;
         Ok(merged)
     }
 
@@ -2196,8 +2214,22 @@ impl SelectionSet {
         Ok(())
     }
 
+    pub(crate) fn merge_selection_set(
+        &mut self,
+        other: &SelectionSet,
+    ) -> Result<(), FederationError> {
+        // WE SHOULDN"T ALWAYS OPTIMIZE -> only remove IF path.length == 1
+        let normalized = other.rebase_on(
+            &self.type_position,
+            /* named_fragments */ &NamedFragments::default(),
+            &self.schema,
+            RebaseErrorHandlingOption::ThrowError
+        )?;
+        self.merge_selection_sets(std::iter::once(&normalized))
+    }
+
     /// Merges the given normalized selection sets into this one.
-    pub(crate) fn merge_into<'op>(
+    pub(crate) fn merge_selection_sets<'op>(
         &mut self,
         others: impl Iterator<Item = &'op SelectionSet>,
     ) -> Result<(), FederationError> {
@@ -2219,11 +2251,23 @@ impl SelectionSet {
             }
             selections_to_merge.extend(other.selections.values());
         }
-        self.merge_selections_into(selections_to_merge.into_iter())
+        self.merge_selections(selections_to_merge.into_iter())
+    }
+
+    /// Unwraps unnecessary inline fragments and merges given selection into this selection set.
+    fn merge_selection(
+        &mut self,
+        other: &Selection,
+    ) -> Result<(), FederationError> {
+        // TODO rebase + remove unneeded inline fragment
+        match other.unwrap_unnecessary_inline_fragment(&self.type_position) {
+            SelectionOrSet::Selection(selection) => self.merge_selections(std::iter::once(&selection)),
+            SelectionOrSet::SelectionSet(selection_set) => self.merge_selection_sets(std::iter::once(&selection_set)),
+        }
     }
 
     /// A helper function for merging the given selections into this one.
-    fn merge_selections_into<'op>(
+    fn merge_selections<'op>(
         &mut self,
         others: impl Iterator<Item = &'op Selection>,
     ) -> Result<(), FederationError> {
@@ -2339,7 +2383,7 @@ impl SelectionSet {
             type_position: self.type_position.clone(),
             selections: Arc::new(SelectionMap::new()),
         };
-        expanded.merge_selections_into(expanded_selections.iter())?;
+        expanded.merge_selections(expanded_selections.iter())?;
         Ok(expanded)
     }
 
@@ -2622,6 +2666,7 @@ impl SelectionSet {
         selection_key_groups: impl Iterator<Item = impl Iterator<Item = &'a Selection>>,
         named_fragments: &NamedFragments,
     ) -> Result<SelectionSet, FederationError> {
+        // missing self!!
         let mut result = SelectionMap::new();
         for group in selection_key_groups {
             let selection = Self::make_selection(schema, parent_type, group, named_fragments)?;
@@ -2783,28 +2828,45 @@ impl SelectionSet {
     /// exist in the map, the existing selection and the given selection are merged, replacing the
     /// existing selection while keeping the same insertion index.
     fn add_selection(&mut self, selection: Selection) -> Result<(), FederationError> {
-        let selections = Arc::make_mut(&mut self.selections);
+        // println!("MY SCHEMA:\n{:?}", self.schema.schema());
+        // println!("SELECTION SCHEMA:\n{:?}", selection.schema().schema());
+        println!("add_selection->adding {} to self type {} selection ({})", selection, self.type_position, self);
+        let Some(rebased_selection) = selection.rebase_on(
+            &self.type_position,
+            &NamedFragments::default(),
+            &self.schema,
+            RebaseErrorHandlingOption::ThrowError
+        )? else {
+            unreachable!("rebased selection should be None only if rebasing fails and we ignore errors");
+            // nothing to add
+            // return Ok(());
+        };
+        println!("REBASED SELECTION {}", rebased_selection);
+        self.merge_selection(&rebased_selection)
 
-        let key = selection.key();
-        match selections.remove(&key) {
-            Some((index, existing_selection)) => {
-                let to_merge = [existing_selection, selection];
-                // `existing_selection` and `selection` both have the same selection key,
-                // so the merged selection will also have the same selection key.
-                let selection = SelectionSet::make_selection(
-                    &self.schema,
-                    &self.type_position,
-                    to_merge.iter(),
-                    /*named_fragments*/ &Default::default(),
-                )?;
-                selections.insert_at(index, selection);
-            }
-            None => {
-                selections.insert(selection);
-            }
-        }
 
-        Ok(())
+        // let selections = Arc::make_mut(&mut self.selections);
+        //
+        // let key = selection.key();
+        // match selections.remove(&key) {
+        //     Some((index, existing_selection)) => {
+        //         let to_merge = [existing_selection, selection];
+        //         // `existing_selection` and `selection` both have the same selection key,
+        //         // so the merged selection will also have the same selection key.
+        //         let selection = SelectionSet::make_selection(
+        //             &self.schema,
+        //             &self.type_position,
+        //             to_merge.iter(),
+        //             /*named_fragments*/ &Default::default(),
+        //         )?;
+        //         selections.insert_at(index, selection);
+        //     }
+        //     None => {
+        //         selections.insert(selection);
+        //     }
+        // }
+        //
+        // Ok(())
     }
 
     /// Adds a path, and optional some selections following that path, to this selection map.
@@ -2836,6 +2898,7 @@ impl SelectionSet {
         path: &[Arc<OpPathElement>],
         selection_set: Option<&Arc<SelectionSet>>,
     ) -> Result<(), FederationError> {
+        println!("add_at_path->entry {:?} selection {:?}", path, selection_set);
         // PORT_NOTE: This method was ported from the JS class `SelectionSetUpdates`. Unlike the
         // JS code, this mutates the selection set map in-place.
         match path.split_first() {
@@ -2869,49 +2932,81 @@ impl SelectionSet {
             }
             // If we have no sub-path, we can add the selection.
             Some((ele, &[])) => {
+                println!("add_at_path->element without subpath {} selection {:?}", ele, selection_set);
                 // PORT_NOTE: The JS code waited until the final selection was being constructed to
                 // turn the path and selection set into a selection. Because we are mutating things
                 // in-place, we eagerly construct the selection that needs to be rebased on the target
                 // schema.
-                let element = OpPathElement::clone(ele);
-                let selection_set = selection_set
-                    .map(|selection_set| {
-                        selection_set.rebase_on(
-                            &element.sub_selection_type_position()?.ok_or_else(|| {
-                                FederationError::internal("unexpected: Element has a selection set with non-composite base type")
-                            })?,
-                            &NamedFragments::default(),
-                            &self.schema,
-                            RebaseErrorHandlingOption::ThrowError,
-                        )
-                    })
-                    .transpose()?;
-                let selection = Selection::from_element(element, selection_set)?;
-                // TODO move the rebasing to add_selection/merge_into
-                if let Some(rebased_selection) = selection.rebase_on(
-                    &self.type_position,
-                    &NamedFragments::default(),
-                    &self.schema,
-                    RebaseErrorHandlingOption::ThrowError,
-                )? {
-                    self.add_selection(rebased_selection)?
+                if selection_set.is_none() || selection_set.is_some_and(|s| s.is_empty()) {
+                    // This is a somewhat common case when dealing with `@key` "conditions" that we can
+                    // end up with trying to add empty sub selection set on a non-leaf node. There is
+                    // nothing to do here - we know will have a node at specified path but currently
+                    // we don't have any sub selections so there is nothing to merge.
+                    // JS code was doing this check in `makeSelectionSet`
+                    if !ele.is_terminal()? {
+                        return Ok(());
+                    } else {
+                        // add leaf
+                        let element = OpPathElement::clone(ele);
+                        let selection = Selection::from_element(
+                            element,
+                            None,
+                        )?;
+                        self.add_selection(selection)?
+                    }
+                } else {
+                    let element = OpPathElement::clone(ele);
+                    let selection = Selection::from_element(
+                        element,
+                        selection_set.map(|set| SelectionSet::clone(set)),
+                    )?;
+                    self.add_selection(selection)?
                 }
+
+
+
+
+                // let selection_set = selection_set
+                //     .map(|selection_set| {
+                //         selection_set.rebase_on(
+                //             &element.sub_selection_type_position()?.ok_or_else(|| {
+                //                 FederationError::internal("unexpected: Element has a selection set with non-composite base type")
+                //             })?,
+                //             &NamedFragments::default(),
+                //             &self.schema,
+                //             RebaseErrorHandlingOption::ThrowError,
+                //         )
+                //     })
+                //     .transpose()?;
+                // let selection = Selection::from_element(element, selection_set)?;
+
+                // // TODO move the rebasing to add_selection/merge_into
+                // if let Some(rebased_selection) = selection.rebase_on(
+                //     &self.type_position,
+                //     &NamedFragments::default(),
+                //     &self.schema,
+                //     RebaseErrorHandlingOption::ThrowError,
+                // )? {
+                //     self.add_selection(rebased_selection)?
+                // }
             }
-            // If we don't have any path, we rebase and merge in the given subselections at the root.
+            // If we don't have any path, we rebase and merge in the given sub selections at the root.
             None => {
                 if let Some(sel) = selection_set {
+                    println!("add_at_path->no path selection {}", sel);
                     // TODO move the rebasing to add_selection/merge_into
                     sel.selections.values().cloned().try_for_each(|s| {
-                        if let Some(rebased) = s.rebase_on(
-                            &self.type_position,
-                            &NamedFragments::default(),
-                            &self.schema,
-                            RebaseErrorHandlingOption::ThrowError,
-                        )? {
-                            self.add_selection(rebased)
-                        } else {
-                            Ok(())
-                        }
+                        // if let Some(rebased) = s.rebase_on(
+                        //     &self.type_position,
+                        //     &NamedFragments::default(),
+                        //     &self.schema,
+                        //     RebaseErrorHandlingOption::ThrowError,
+                        // )? {
+                        //     self.add_selection(rebased)
+                        // } else {
+                        //     Ok(())
+                        // }
+                        self.add_selection(s)
                     })?;
                 }
             }
@@ -3716,6 +3811,7 @@ impl FieldSelection {
         if &self.field.data().schema == schema
             && &self.field.data().field_position.parent() == parent_type
         {
+            println!("REBASE ON -> FIELD SELECTION IS ALREADY POINTING TO THE SAME SCHEMA");
             // we are rebasing field on the same parent within the same schema - we can just return self
             return Ok(Some(Selection::from(self.clone())));
         }
@@ -3726,6 +3822,7 @@ impl FieldSelection {
         };
 
         let Some(selection_set) = &self.selection_set else {
+            println!("REBASE ON -> LEAF FIELD");
             // leaf field
             return Ok(Some(Selection::from_field(rebased, None)));
         };
@@ -3838,6 +3935,8 @@ impl<'a> FieldSelectionValue<'a> {
         for other in others {
             let other_field = &other.field;
             if other_field.data().schema != self_field.data().schema {
+                // println!("SELF SCHEMA: {}\nOTHER SCHEMA: {}", self_field.data().schema.schema(), other_field.data().schema.schema());
+                println!("CANNOT MERGE FIELD {}", self_field);
                 return Err(Internal {
                     message: "Cannot merge field selections from different schemas".to_owned(),
                 }
@@ -3874,7 +3973,7 @@ impl<'a> FieldSelectionValue<'a> {
             }
         }
         if let Some(self_selection_set) = self.get_selection_set_mut() {
-            self_selection_set.merge_into(selection_sets.into_iter())?;
+            self_selection_set.merge_selection_sets(selection_sets.into_iter())?;
         }
         Ok(())
     }
@@ -4522,7 +4621,7 @@ impl<'a> InlineFragmentSelectionValue<'a> {
             selection_sets.push(&other.selection_set);
         }
         self.get_selection_set_mut()
-            .merge_into(selection_sets.into_iter())?;
+            .merge_selection_sets(selection_sets.into_iter())?;
         Ok(())
     }
 }
@@ -4618,7 +4717,7 @@ pub(crate) fn merge_selection_sets(
         }
         .into());
     };
-    first.merge_into(remainder.iter())?;
+    first.merge_selection_sets(remainder.iter())?;
 
     // Take ownership of the first element and discard the rest;
     // we can unwrap because `split_first_mut()` guarantees at least one element will be yielded

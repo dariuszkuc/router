@@ -1478,7 +1478,7 @@ impl FetchDependencyGraph {
         if path.is_empty() {
             mutable_node
                 .selection_set
-                .merge_selections(&merged.selection_set.selection_set)?;
+                .add_selections(&merged.selection_set.selection_set)?;
         } else {
             // The merged nodes might have some @include/@skip at top-level that are already part of the path. If so,
             // we clean things up a bit.
@@ -1486,6 +1486,7 @@ impl FetchDependencyGraph {
                 &merged.selection_set.selection_set,
                 &path.conditional_directives(),
             )?;
+            println!("FetchDependencyGraph->merge_in_internal->adding selection set {} at path {}", merged_selection_set, path);
             mutable_node
                 .selection_set
                 .add_at_path(path, Some(&Arc::new(merged_selection_set)))?;
@@ -2119,6 +2120,7 @@ impl FetchSelectionSet {
         path_in_node: &OpPath,
         selection_set: Option<&Arc<SelectionSet>>,
     ) -> Result<(), FederationError> {
+        println!("FetchSelectionSet->add_at_path->path {} selection {:?}", path_in_node, selection_set);
         Arc::make_mut(&mut self.selection_set).add_at_path(path_in_node, selection_set)?;
         // TODO: when calling this multiple times, maybe only re-compute conditions at the end?
         // Or make it lazily-initialized and computed on demand?
@@ -2128,17 +2130,17 @@ impl FetchSelectionSet {
 
     // JS PORT NOTE: Since we are doing selection set modifications in place we are actually merging
     // the selections and not adding them to the updates.
-    fn merge_selections(
+    fn add_selections(
         &mut self,
         selection_set: &Arc<SelectionSet>,
     ) -> Result<(), FederationError> {
-        let rebased_selections = selection_set.rebase_on(
+        let rebased_selection = selection_set.rebase_on(
             &self.selection_set.type_position,
             &NamedFragments::default(),
             &self.selection_set.schema,
             RebaseErrorHandlingOption::ThrowError,
         )?;
-        Arc::make_mut(&mut self.selection_set).merge_into(iter::once(&rebased_selections))?;
+        Arc::make_mut(&mut self.selection_set).merge_selection_set(&rebased_selection)?;
         Ok(())
     }
 }
@@ -2165,7 +2167,7 @@ impl FetchInputs {
                     selection.type_position.clone(),
                 ))
             });
-        Arc::make_mut(type_selections).merge_into(std::iter::once(selection))
+        Arc::make_mut(type_selections).merge_selection_sets(std::iter::once(selection))
         // PORT_NOTE: `onUpdateCallback` call is moved to `FetchDependencyGraphNode::on_inputs_updated`.
     }
 
@@ -2386,6 +2388,7 @@ pub(crate) fn compute_nodes_for_tree(
         let node =
             FetchDependencyGraph::node_weight_mut(&mut dependency_graph.graph, stack_item.node_id)?;
         for selection_set in &stack_item.tree.local_selection_sets {
+            println!("compute_nodes_for_tree->adding selection set {} at path {}", selection_set, &stack_item.node_path.path_in_node);
             node.selection_set_mut()
                 .add_at_path(&stack_item.node_path.path_in_node, Some(selection_set))?;
             dependency_graph
@@ -2393,6 +2396,7 @@ pub(crate) fn compute_nodes_for_tree(
                 .update_subselection(&stack_item.defer_context, Some(selection_set))?;
         }
         if stack_item.tree.is_leaf() {
+            println!("compute_nodes_for_tree->item is leaf adding empty selection set at path {}", &stack_item.node_path.path_in_node);
             node.selection_set_mut()
                 .add_at_path(&stack_item.node_path.path_in_node, None)?;
             dependency_graph
@@ -2567,10 +2571,10 @@ fn compute_nodes_for_key_resolution<'a>(
         // Conditions do not use named fragments
         &Default::default(),
         &dependency_graph.supergraph_schema,
-        super::operation::RebaseErrorHandlingOption::ThrowError,
+        RebaseErrorHandlingOption::ThrowError,
     )?;
 
-    input_selections.merge_into(std::iter::once(&edge_conditions))?;
+    input_selections.merge_selection_set(&edge_conditions)?;
 
     let new_node = FetchDependencyGraph::node_weight_mut(&mut dependency_graph.graph, new_node_id)?;
     new_node.add_inputs(
@@ -2601,6 +2605,7 @@ fn compute_nodes_for_key_resolution<'a>(
         .node_path
         .path_in_node
         .with_pushed(typename_field);
+    println!("compute_nodes_for_key_resolution->adding empty selection set at path {}", typename_path);
     node.selection_set_mut().add_at_path(&typename_path, None)?;
     Ok(ComputeNodesStackItem {
         tree: &child.tree,
@@ -2672,6 +2677,7 @@ fn compute_nodes_for_root_type_resolution<'a>(
             .node_path
             .path_in_node
             .with_pushed(typename_field);
+        println!("compute_nodes_for_root_type_resolution->adding empty selection set at path {}", typename_path);
         node.selection_set_mut().add_at_path(&typename_path, None)?;
     }
 
@@ -2779,6 +2785,7 @@ fn compute_nodes_for_op_path_element<'a>(
             .with_pushed(typename_field.clone());
         let node =
             FetchDependencyGraph::node_weight_mut(&mut dependency_graph.graph, stack_item.node_id)?;
+        println!("compute_nodes_for_op_path_element->adding empty selection set at path {}", typename_path);
         node.selection_set_mut().add_at_path(&typename_path, None)?;
         dependency_graph.defer_tracking.update_subselection(
             &DeferContext {
@@ -3511,7 +3518,7 @@ fn inputs_for_require(
         &fetch_dependency_graph.supergraph_schema,
         RebaseErrorHandlingOption::ThrowError,
     )?;
-    full_selection_set.merge_into(iter::once(&rebased_conditions))?;
+    full_selection_set.merge_selection_set(&rebased_conditions)?;
     if include_key_inputs {
         let Some(key_condition) = fetch_dependency_graph
             .federated_query_graph
@@ -3555,7 +3562,7 @@ fn inputs_for_require(
                 target_subgraph,
                 RebaseErrorHandlingOption::ThrowError,
             )?;
-            full_selection_set.merge_into(iter::once(&key_condition_as_input))?;
+            full_selection_set.merge_selection_set(&key_condition_as_input)?;
         } else {
             let rebased_key_condition = key_condition.rebase_on(
                 &input_type,
@@ -3563,7 +3570,7 @@ fn inputs_for_require(
                 &fetch_dependency_graph.supergraph_schema,
                 RebaseErrorHandlingOption::ThrowError,
             )?;
-            full_selection_set.merge_into(iter::once(&rebased_key_condition))?;
+            full_selection_set.merge_selection_set(&rebased_key_condition)?;
         }
 
         // Note that `key_inputs` are used to ensure those input are fetch on the original group, the one having `edge`. In
@@ -3572,7 +3579,7 @@ fn inputs_for_require(
         // subgraph does not know in that particular case.
         let mut key_inputs =
             SelectionSet::for_composite_type(edge_conditions.schema.clone(), input_type.clone());
-        key_inputs.merge_into(iter::once(&key_condition))?;
+        key_inputs.merge_selection_set(&key_condition)?;
 
         Ok((
             wrap_input_selections(
@@ -3629,6 +3636,7 @@ fn add_post_require_inputs(
             &mut dependency_graph.graph,
             pre_require_node_id,
         )?;
+        println!("add_post_require_inputs->adding key selection set {} at path {}", key_inputs, &require_node_path.path_in_node);
         pre_require_node
             .selection_set
             .add_at_path(&require_node_path.path_in_node, Some(&Arc::new(key_inputs)))?;
