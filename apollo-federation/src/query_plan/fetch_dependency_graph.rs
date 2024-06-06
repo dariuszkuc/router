@@ -2120,7 +2120,7 @@ impl FetchSelectionSet {
         path_in_node: &OpPath,
         selection_set: Option<&Arc<SelectionSet>>,
     ) -> Result<(), FederationError> {
-        println!("FetchSelectionSet->add_at_path->path {} selection {:?}", path_in_node, selection_set);
+        println!("FetchSelectionSet->add_at_path->path {:?} selection {:?}", path_in_node, selection_set);
         Arc::make_mut(&mut self.selection_set).add_at_path(path_in_node, selection_set)?;
         // TODO: when calling this multiple times, maybe only re-compute conditions at the end?
         // Or make it lazily-initialized and computed on demand?

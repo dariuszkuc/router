@@ -694,6 +694,11 @@ pub(crate) enum Selection {
 
 impl Selection {
     pub(crate) fn from_field(field: Field, sub_selections: Option<SelectionSet>) -> Self {
+        //         parent_type: &CompositeTypeDefinitionPosition,
+        //         named_fragments: &NamedFragments,
+        //         schema: &ValidFederationSchema,
+        //         error_handling: RebaseErrorHandlingOption,
+        // TODO rebase selection
         Self::Field(Arc::new(field.with_subselection(sub_selections)))
     }
 
@@ -862,6 +867,7 @@ impl Selection {
         schema: &ValidFederationSchema,
         error_handling: RebaseErrorHandlingOption,
     ) -> Result<Option<Selection>, FederationError> {
+        println!("REBASING {} FROM {:?} SCHEMA TO {:?} SCHEMA", self, self.schema(), schema);
         match self {
             Selection::Field(field) => {
                 field.rebase_on(parent_type, named_fragments, schema, error_handling)
@@ -1240,6 +1246,9 @@ mod normalized_field_selection {
             self,
             selection_set: Option<SelectionSet>,
         ) -> FieldSelection {
+            if selection_set.is_some() {
+                println!("Field->with_subselection->Field {} points to {:?} whereas subselection points to {:?}", self, self.schema(), selection_set.clone().unwrap().schema);
+            }
             FieldSelection {
                 field: self,
                 selection_set,
@@ -2271,6 +2280,11 @@ impl SelectionSet {
         &mut self,
         others: impl Iterator<Item = &'op Selection>,
     ) -> Result<(), FederationError> {
+        println!("SelectionSet->merge_selections->attempting to merge {} selections on {:?} schema", self, self.schema);
+        for selection in self.selections.values() {
+            println!("SelectionSet->merge_selections->subselection {} {:?} schema", selection, selection.schema());
+        }
+
         let mut fields = IndexMap::new();
         let mut fragment_spreads = IndexMap::new();
         let mut inline_fragments = IndexMap::new();
@@ -2288,6 +2302,8 @@ impl SelectionSet {
                                     ),
                                 }.into());
                         };
+                        println!("SelectionSet->merge_selections->FIELD {} ALREADY EXISTS (POINTS TO {:?})", self_field_selection, self_field_selection.field.schema());
+                        println!("SelectionSet->merge_selections->OTHER {} FIELD POINTS TO {:?})", other_field_selection, other_field_selection.field.schema());
                         fields
                             .entry(other_key)
                             .or_insert_with(Vec::new)
@@ -2606,6 +2622,7 @@ impl SelectionSet {
         let Some(second) = iter.next() else {
             // Optimize for the simple case of a single selection, as we don't have to do anything
             // complex to merge the sub-selections.
+            println!("SelectionSet->make_selection");
             return first
                 .rebase_on(
                     parent_type,
@@ -2828,8 +2845,8 @@ impl SelectionSet {
     /// exist in the map, the existing selection and the given selection are merged, replacing the
     /// existing selection while keeping the same insertion index.
     fn add_selection(&mut self, selection: Selection) -> Result<(), FederationError> {
-        // println!("MY SCHEMA:\n{:?}", self.schema.schema());
-        // println!("SELECTION SCHEMA:\n{:?}", selection.schema().schema());
+        println!("SELF SCHEMA:\n{:?}", self.schema);
+        println!("SELECTION SCHEMA:\n{:?}", selection.schema());
         println!("add_selection->adding {} to self type {} selection ({})", selection, self.type_position, self);
         let Some(rebased_selection) = selection.rebase_on(
             &self.type_position,
@@ -2841,7 +2858,7 @@ impl SelectionSet {
             // nothing to add
             // return Ok(());
         };
-        println!("REBASED SELECTION {}", rebased_selection);
+        println!("REBASED SELECTION {} ON {:?} SCHEMA", rebased_selection, rebased_selection.schema());
         self.merge_selection(&rebased_selection)
 
 
@@ -2898,7 +2915,7 @@ impl SelectionSet {
         path: &[Arc<OpPathElement>],
         selection_set: Option<&Arc<SelectionSet>>,
     ) -> Result<(), FederationError> {
-        println!("add_at_path->entry {:?} selection {:?}", path, selection_set);
+        println!("SelectionSet->add_at_path->entry {:?} selection {:?}", path, selection_set);
         // PORT_NOTE: This method was ported from the JS class `SelectionSetUpdates`. Unlike the
         // JS code, this mutates the selection set map in-place.
         match path.split_first() {
@@ -2932,7 +2949,7 @@ impl SelectionSet {
             }
             // If we have no sub-path, we can add the selection.
             Some((ele, &[])) => {
-                println!("add_at_path->element without subpath {} selection {:?}", ele, selection_set);
+                println!("SelectionSet->add_at_path->element without subpath {} selection {:?}", ele, selection_set);
                 // PORT_NOTE: The JS code waited until the final selection was being constructed to
                 // turn the path and selection set into a selection. Because we are mutating things
                 // in-place, we eagerly construct the selection that needs to be rebased on the target
@@ -2993,7 +3010,7 @@ impl SelectionSet {
             // If we don't have any path, we rebase and merge in the given sub selections at the root.
             None => {
                 if let Some(sel) = selection_set {
-                    println!("add_at_path->no path selection {}", sel);
+                    println!("SelectionSet->add_at_path->no path selection {}", sel);
                     // TODO move the rebasing to add_selection/merge_into
                     sel.selections.values().cloned().try_for_each(|s| {
                         // if let Some(rebased) = s.rebase_on(
@@ -3808,14 +3825,16 @@ impl FieldSelection {
         schema: &ValidFederationSchema,
         error_handling: RebaseErrorHandlingOption,
     ) -> Result<Option<Selection>, FederationError> {
+        println!("REBASING {} FROM {:?} TO {:?}", self, self.field.data().schema, schema);
         if &self.field.data().schema == schema
             && &self.field.data().field_position.parent() == parent_type
         {
-            println!("REBASE ON -> FIELD SELECTION IS ALREADY POINTING TO THE SAME SCHEMA");
+            println!("REBASE ON -> FIELD {} SELECTION IS ALREADY POINTING TO THE SAME SCHEMA", self);
             // we are rebasing field on the same parent within the same schema - we can just return self
             return Ok(Some(Selection::from(self.clone())));
         }
 
+        println!("REBASING FIELD");
         let Some(rebased) = self.field.rebase_on(parent_type, schema, error_handling)? else {
             // rebasing failed but we are ignoring errors
             return Ok(None);
@@ -3833,13 +3852,15 @@ impl FieldSelection {
             .get(schema.schema())?
             .ty
             .inner_named_type();
+        println!("FieldSelection->rebase_on->rebased type name {} pointing to {:?} SCHEMA", rebased_type_name, rebased.schema());
         let rebased_base_type: CompositeTypeDefinitionPosition =
             schema.get_type(rebased_type_name.clone())?.try_into()?;
-
+        println!("FieldSelection->rebase_on->rebased base type {}", rebased_base_type);
         let selection_set_type = &selection_set.type_position;
         if self.field.data().schema == rebased.data().schema
             && &rebased_base_type == selection_set_type
         {
+            println!("FieldSelection->rebase_on->we are rebasing within the same schema and the same base type {:?}", rebased);
             // we are rebasing within the same schema and the same base type
             return Ok(Some(Selection::from_field(
                 rebased.clone(),
@@ -3847,8 +3868,10 @@ impl FieldSelection {
             )));
         }
 
+        println!("FieldSelection->rebase_on->rebasing selection set");
         let rebased_selection_set =
             selection_set.rebase_on(&rebased_base_type, named_fragments, schema, error_handling)?;
+        println!("FieldSelection->rebase_on->selection set was rebased {}", rebased_selection_set);
         if rebased_selection_set.selections.is_empty() {
             // empty selection set
             Ok(None)
@@ -3931,12 +3954,15 @@ impl<'a> FieldSelectionValue<'a> {
         others: impl Iterator<Item = &'op FieldSelection>,
     ) -> Result<(), FederationError> {
         let self_field = &self.get().field;
+        println!("FieldSelectionValue->merge_into->MERGING {}", self_field);
+        println!("FieldSelectionValue->merge_into->SELF SCHEMA {:?}", self_field.data().schema);
         let mut selection_sets = vec![];
         for other in others {
             let other_field = &other.field;
             if other_field.data().schema != self_field.data().schema {
                 // println!("SELF SCHEMA: {}\nOTHER SCHEMA: {}", self_field.data().schema.schema(), other_field.data().schema.schema());
                 println!("CANNOT MERGE FIELD {}", self_field);
+                println!("OTHER SCHEMA {:?}", other_field.data().schema);
                 return Err(Internal {
                     message: "Cannot merge field selections from different schemas".to_owned(),
                 }
@@ -3988,6 +4014,7 @@ impl Field {
     ) -> Result<Option<Field>, FederationError> {
         let field_parent = self.data().field_position.parent();
         if self.data().schema == *schema && field_parent == *parent_type {
+            println!("Field->rebase_on->pointing to the same parent return self");
             // pointing to the same parent -> return self
             return Ok(Some(self.clone()));
         }
@@ -4023,6 +4050,7 @@ impl Field {
             let mut updated_field_data = self.data().clone();
             updated_field_data.schema = schema.clone();
             updated_field_data.field_position = field_from_parent;
+            println!("Field->rebase_on->updated field data {:?}", updated_field_data);
             Ok(Some(Field::new(updated_field_data)))
         } else if let RebaseErrorHandlingOption::IgnoreError = error_handling {
             Ok(None)
