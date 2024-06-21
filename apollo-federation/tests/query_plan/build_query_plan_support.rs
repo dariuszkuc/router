@@ -80,6 +80,7 @@ macro_rules! assert_plan {
         )
         .unwrap();
         let plan = planner.build_query_plan(&document, None, Default::default()).unwrap();
+        println!("{}", plan);
         insta::assert_snapshot!(plan, @$expected);
         plan
     }};

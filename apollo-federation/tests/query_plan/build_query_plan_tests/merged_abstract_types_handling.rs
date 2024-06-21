@@ -943,3 +943,327 @@ fn does_not_error_out_handling_fragments_when_interface_subtyping_is_involved() 
     "###
     );
 }
+
+
+#[test]
+fn handles_stuff() {
+    let planner = planner!(
+        agency: r#"
+        type Agency @key(fields: "id") {
+          id: ID!
+          companyName: String
+        }
+
+        type Group @key(fields: "id") {
+          id: ID!
+          name: String
+        }
+
+        extend union PublisherType = Agency | Group
+        "#,
+        books: r#"
+        type Book @key(fields: "id") {
+          id: ID!
+          title: String
+        }
+
+        type Query {
+          books: [Book]
+        }
+        "#,
+        inventory: r#"
+        interface Product {
+          id: ID!
+          dimensions: ProductDimension
+          delivery(zip: String): DeliveryEstimates
+        }
+
+        type Book implements Product @key(fields: "id") {
+          id: ID!
+          dimensions: ProductDimension @external
+          delivery(zip: String): DeliveryEstimates
+            @requires(fields: "dimensions { size weight }")
+        }
+
+        type Magazine implements Product @key(fields: "id") {
+          id: ID!
+          dimensions: ProductDimension @external
+          delivery(zip: String): DeliveryEstimates
+            @requires(fields: "dimensions { size weight }")
+        }
+
+        type ProductDimension @shareable {
+          size: String
+          weight: Float
+        }
+
+        type DeliveryEstimates {
+          estimatedDelivery: String
+          fastestDelivery: String
+        }
+        "#,
+        magazines: r#"
+        type Magazine @key(fields: "id") {
+          id: ID!
+          title: String
+        }
+
+        type Query {
+          magazines: [Magazine]
+        }
+        "#,
+        products: r#"
+        type Query {
+          products: [Product]
+          similar(id: ID!): [Product]
+        }
+
+        interface Product {
+          id: ID!
+          sku: String
+          dimensions: ProductDimension
+          createdBy: User
+          hidden: Boolean @inaccessible
+        }
+
+        interface Similar {
+          similar: [Product]
+        }
+
+        type ProductDimension @shareable {
+          size: String
+          weight: Float
+        }
+
+        type Book implements Product & Similar @key(fields: "id") {
+          id: ID!
+          sku: String
+          dimensions: ProductDimension @shareable
+          createdBy: User
+          similar: [Book]
+          hidden: Boolean
+          publisherType: PublisherType
+        }
+
+        type Magazine implements Product & Similar @key(fields: "id") {
+          id: ID!
+          sku: String
+          dimensions: ProductDimension @shareable
+          createdBy: User
+          similar: [Magazine]
+          hidden: Boolean
+          publisherType: PublisherType
+        }
+
+        union PublisherType = Agency | Self
+
+        type Agency {
+          id: ID! @shareable
+        }
+
+        type Self {
+          email: String
+        }
+
+        type User @key(fields: "email") {
+          email: ID!
+          totalProductsCreated: Int @shareable
+        }
+        "#,
+        reviews: r#"
+        type Book implements Product & Similar @key(fields: "id") {
+          id: ID!
+          reviewsCount: Int!
+          reviewsScore: Float! @shareable
+          reviews: [Review!]!
+          similar: [Book] @external
+          reviewsOfSimilar: [Review!]! @requires(fields: "similar { id }")
+        }
+
+        type Magazine implements Product & Similar @key(fields: "id") {
+          id: ID!
+          reviewsCount: Int!
+          reviewsScore: Float! @shareable
+          reviews: [Review!]!
+          similar: [Magazine] @external
+          reviewsOfSimilar: [Review!]! @requires(fields: "similar { id }")
+        }
+
+        interface Product {
+          id: ID!
+          reviewsCount: Int!
+          reviewsScore: Float!
+          reviews: [Review!]!
+        }
+
+        interface Similar {
+          similar: [Product]
+        }
+
+        type Query {
+          review(id: Int!): Review
+        }
+
+        type Review {
+          id: Int!
+          body: String!
+          product: Product
+        }
+        "#,
+        users: r#"
+        type User @key(fields: "email") {
+          email: ID!
+          name: String
+          totalProductsCreated: Int @shareable
+        }
+        "#,
+    );
+
+    assert_plan!(
+      &planner,
+      r#"
+      query ($title: Boolean = true) {
+        products {
+          id
+          reviews {
+            product {
+              id
+              ... on Book @include(if: $title) {
+                title
+                ... on Book @skip(if: $title) {
+                  sku
+                }
+              }
+              ... on Magazine {
+                sku
+              }
+            }
+          }
+        }
+      }
+      "#,
+      @r###"
+        QueryPlan {
+          Sequence {
+            Fetch(service: "products") {
+              {
+                products {
+                  __typename
+                  id
+                  ... on Book {
+                    __typename
+                    id
+                  }
+                  ... on Magazine {
+                    __typename
+                    id
+                  }
+                }
+              }
+            },
+            Flatten(path: "products.@") {
+              Fetch(service: "reviews") {
+                {
+                  ... on Book {
+                    __typename
+                    id
+                  }
+                  ... on Magazine {
+                    __typename
+                    id
+                  }
+                } =>
+                {
+                  ... on Book {
+                    reviews {
+                      product {
+                        __typename
+                        id
+                        ... on Book @include(if: $title) {
+                          __typename
+                          id
+                          ... on Book @skip(if: $title) {
+                            __typename
+                            id
+                          }
+                        }
+                        ... on Magazine {
+                          __typename
+                          id
+                        }
+                      }
+                    }
+                  }
+                  ... on Magazine {
+                    reviews {
+                      product {
+                        __typename
+                        id
+                        ... on Book @include(if: $title) {
+                          __typename
+                          id
+                          ... on Book @skip(if: $title) {
+                            __typename
+                            id
+                          }
+                        }
+                        ... on Magazine {
+                          __typename
+                          id
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+            },
+            Parallel {
+              Include(if: $title) {
+                Flatten(path: "products.@.reviews.@.product") {
+                  Fetch(service: "books") {
+                    {
+                      ... on Book {
+                        __typename
+                        id
+                      }
+                    } =>
+                    {
+                      ... on Book {
+                        title
+                      }
+                    }
+                  },
+                }
+              },
+              Flatten(path: "products.@.reviews.@.product") {
+                Fetch(service: "products") {
+                  {
+                    ... on Book {
+                      ... on Book {
+                        __typename
+                        id
+                      }
+                    }
+                    ... on Magazine {
+                      __typename
+                      id
+                    }
+                  } =>
+                  {
+                    ... on Book @include(if: $title) {
+                      ... on Book @skip(if: $title) {
+                        sku
+                      }
+                    }
+                    ... on Magazine {
+                      sku
+                    }
+                  }
+                },
+              },
+            },
+          },
+        }
+      "###
+    );
+}

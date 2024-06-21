@@ -551,6 +551,7 @@ impl QueryPlanner {
             statistics,
         };
 
+        println!("Query plan computed");
         snapshot!(plan, "query plan");
 
         Ok(plan)
@@ -911,19 +912,30 @@ impl SubgraphOperationCompression {
         subgraph_schema: &ValidFederationSchema,
         operation: Operation,
     ) -> Result<Operation, FederationError> {
+        let mut operation = operation;
+        // operation.selection_set = operation.selection_set.flatten_unnecessary_fragments(
+        //     &operation.selection_set.type_position,
+        //     &NamedFragments::default(), subgraph_schema
+        // )?;
         match self {
             Self::ReuseFragments(fragments) => {
+                println!("COMPRESSION: REUSE FRAGMENTS\nBEFORE:\n{operation}");
                 let rebased = fragments.for_subgraph(Arc::clone(subgraph_name), subgraph_schema);
-                let mut operation = operation;
                 operation.reuse_fragments(rebased)?;
+                println!("AFTER:\n{operation}");
                 Ok(operation)
             }
             Self::GenerateFragments => {
+                println!("COMPRESSION: GEN FRAGMENTS\nBEFORE:{operation}");
                 let mut operation = operation;
                 operation.generate_fragments()?;
+                println!("AFTER:\n{operation}");
                 Ok(operation)
             }
-            Self::Disabled => Ok(operation),
+            Self::Disabled => {
+                println!("COMPRESSION: NONE\n{operation}");
+                Ok(operation)
+            }
         }
     }
 }

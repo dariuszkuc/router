@@ -1,9 +1,11 @@
+use std::any::Any;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use std::fmt::Display;
+use std::fmt::{Display, format};
 use std::fmt::Formatter;
 use std::fmt::Write;
 use std::hash::Hash;
+use std::io::Write as io_Write;
 use std::ops::Deref;
 use std::sync::atomic;
 use std::sync::Arc;
@@ -19,6 +21,7 @@ use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 use tracing::debug;
 use tracing::debug_span;
+use thiserror::__private::AsDisplay;
 
 use crate::display_helpers::write_indented_lines;
 use crate::display_helpers::DisplayOption;
@@ -105,9 +108,9 @@ use crate::schema::ValidFederationSchema;
 #[derive(Clone, serde::Serialize)]
 pub(crate) struct GraphPath<TTrigger, TEdge>
 where
-    TTrigger: Eq + Hash,
+    TTrigger: Eq + Hash + 'static,
     Arc<TTrigger>: Into<GraphPathTrigger>,
-    TEdge: Copy + Into<Option<EdgeIndex>>,
+    TEdge: Copy + Into<Option<EdgeIndex>> + 'static,
     EdgeIndex: Into<TEdge>,
 {
     /// The query graph of which this is a path.
@@ -164,9 +167,9 @@ where
 
 impl<TTrigger, TEdge> std::fmt::Debug for GraphPath<TTrigger, TEdge>
 where
-    TTrigger: Eq + Hash,
+    TTrigger: Eq + Hash + 'static,
     Arc<TTrigger>: Into<GraphPathTrigger>,
-    TEdge: Copy + Into<Option<EdgeIndex>>,
+    TEdge: Copy + Into<Option<EdgeIndex>> + 'static,
     EdgeIndex: Into<TEdge>,
     // In addition to the bounds of the GraphPath struct, also require Debug:
     TTrigger: std::fmt::Debug,
@@ -207,6 +210,22 @@ where
             )
             .field("defer_on_tail", defer_on_tail)
             .finish_non_exhaustive()
+    }
+}
+
+impl<TTrigger, TEdge> GraphPath<TTrigger, TEdge>
+where
+    TTrigger: Eq + Hash + 'static,
+    Arc<TTrigger>: Into<GraphPathTrigger>,
+    TEdge: Copy + Into<Option<EdgeIndex>> + 'static,
+    EdgeIndex: Into<TEdge>,
+{
+    fn display(&self) -> String {
+        if let Some(op_graph_path) = (self as &dyn Any).downcast_ref::<OpGraphPath>() {
+            op_graph_path.to_string()
+        } else {
+            "ERROR: GraphPath is not OpGraphPath".to_string()
+        }
     }
 }
 
@@ -663,9 +682,9 @@ impl Default for ExcludedConditions {
 #[derive(Clone, serde::Serialize)]
 pub(crate) struct IndirectPaths<TTrigger, TEdge>
 where
-    TTrigger: Eq + Hash,
+    TTrigger: Eq + Hash + 'static,
     Arc<TTrigger>: Into<GraphPathTrigger>,
-    TEdge: Copy + Into<Option<EdgeIndex>>,
+    TEdge: Copy + Into<Option<EdgeIndex>> + 'static,
     EdgeIndex: Into<TEdge>,
 {
     paths: Arc<Vec<Arc<GraphPath<TTrigger, TEdge>>>>,
@@ -1197,6 +1216,9 @@ where
         // https://github.com/apollographql/federation/pull/1653 for more details).
         if let Some(last_edge) = self.edges.last() {
             if let Some(last_edge) = (*last_edge).into() {
+                let (h, t) = self.graph.edge_endpoints_weight(last_edge)?;
+                let e = self.graph.edge_weight(last_edge)?;
+                println!("next_edges->TAIL EDGE SPECIFIED {} -> {} {}", h, t, e);
                 let Some(non_trivial_followup_edges) =
                     self.graph.non_trivial_followup_edges.get(&last_edge)
                 else {
@@ -1204,10 +1226,28 @@ where
                         "Unexpectedly missing entry for non-trivial followup edges map",
                     ));
                 };
+                let mut printed_edges = Vec::new();
+                for i in non_trivial_followup_edges {
+                    let e = self.graph.edge_weight(i.clone()).expect("edge should exist");
+                    printed_edges.push(e.display(i, &self.graph));
+                }
+
+                println!("next_edges->NON TRIVIAL {} EDGES", non_trivial_followup_edges.len());
+                println!("next_edges->{}", printed_edges.join(", "));
                 return Ok(Either::Right(non_trivial_followup_edges.iter().copied()));
             }
         }
-
+        let mut printed_edges = Vec::new();
+        self.graph
+            .out_edges(self.tail)
+            .into_iter()
+            .for_each(|edge_ref| {
+                let id = edge_ref.id();
+                let e = self.graph.edge_weight(id.clone()).expect("missing edge");
+                printed_edges.push(e.display(&id, &self.graph));
+            });
+        println!("next_edges->DEFAULT {} EDGES", printed_edges.len());
+        println!("next_edges->{}", printed_edges.join(", "));
         Ok(Either::Left(
             self.graph.out_edges(self.tail).into_iter().map(get_id),
         ))
@@ -1423,6 +1463,7 @@ where
             &EnabledOverrideConditions,
         ) -> Option<TEdge>,
     ) -> Result<IndirectPaths<TTrigger, TEdge>, FederationError> {
+        println!("starting advance path with non collecting and type preserving transitions");
         // If we're asked for indirect paths after an "@interfaceObject fake down cast" but that
         // down cast comes just after non-collecting edge(s), then we can ignore the ask (skip
         // indirect paths from there). The reason is that the presence of the non-collecting edges
@@ -1465,19 +1506,29 @@ where
             debug!("From {to_advance:?}");
             let span = debug_span!(" |");
             let _guard = span.enter();
+            println!("\tFrom {}:", to_advance.display());
+            let mut total_edges = 0;
+            let mut trivial_edges = 0;
             for edge in to_advance.next_edges()? {
                 debug!("Testing edge {edge:?}");
                 let span = debug_span!(" |");
                 let _guard = span.enter();
+                total_edges += 1;
                 let edge_weight = self.graph.edge_weight(edge)?;
                 if edge_weight.transition.collect_operation_elements() {
+                    trivial_edges += 1;
                     continue;
                 }
+
+                let (head, tail) = self.graph.edge_endpoints_weight(edge)?;
+                println!("\t\tTesting edge {} -> {} {}", head, tail, edge_weight);
+
                 let (edge_head, edge_tail) = self.graph.edge_endpoints(edge)?;
                 let edge_tail_weight = self.graph.node_weight(edge_tail)?;
 
                 if excluded_destinations.is_excluded(&edge_tail_weight.source) {
                     debug!("Ignored: edge is excluded");
+                    println!("\t\tIgnored: edge is excluded");
                     continue;
                 }
 
@@ -1549,6 +1600,12 @@ where
                 debug!("Validating conditions {edge_weight}");
                 let span = debug_span!(" |");
                 let guard = span.enter();
+                println!("\t\t\t-> Validating conditions {:?}", edge_weight.conditions);
+                if edge_weight.conditions.is_none() {
+                    println!("\t\t\t-> Validating conditions <EMPTY>");
+                } else {
+                    println!("\t\t\t-> Validating conditions {}", edge_weight.conditions.clone().unwrap());
+                }
                 // As we validate the condition for this edge, it might be necessary to jump to
                 // another subgraph, but if for that we need to jump to the same subgraph we're
                 // trying to get to, then it means there is another, shorter way to go to our
@@ -1564,6 +1621,7 @@ where
                 if let ConditionResolution::Satisfied { path_tree, cost } = condition_resolution {
                     debug!("Condition satisfied");
                     drop(guard);
+                    println!("\t\t\t=> Condition satisfied");
                     // We can get to `edge_tail_weight.source` with that edge. But if we had already
                     // found another path to the same subgraph, we want to replace it with this one
                     // only if either 1) it is shorter or 2) if it's of equal size, only if the
@@ -1573,6 +1631,7 @@ where
                             && prev_for_source.1 <= cost
                         {
                             debug!("Ignored: a better (less costly) path to the same subgraph already added");
+                            println!("\t\t\t=> Ignored: a better (less costly) path to the same subgraph already added");
                             continue;
                         }
                     }
@@ -1751,6 +1810,7 @@ where
                         ConditionResolution::Satisfied { cost, path_tree },
                         None,
                     )?);
+                    println!("\t\t\t-> Using edge, advance path: {}", updated_path.display());
                     best_path_by_source.insert(
                         edge_tail_weight.source.clone(),
                         Some((updated_path.clone(), cost)),
@@ -1778,7 +1838,12 @@ where
                     debug!("Condition unsatisfiable: {condition_resolution:?}");
                 }
             }
+
+            if total_edges == trivial_edges {
+                println!("nothing to try for graph path - it only has trivial non collecting outbound edges");
+            }
         }
+
 
         Ok(IndirectPaths {
             paths: Arc::new(
@@ -1855,16 +1920,16 @@ where
 /// This wrapper compares by *reverse* comparison of edge count.
 struct HeapElement<TTrigger, TEdge>(Arc<GraphPath<TTrigger, TEdge>>)
 where
-    TTrigger: Eq + Hash,
+    TTrigger: Eq + Hash + 'static,
     Arc<TTrigger>: Into<GraphPathTrigger>,
-    TEdge: Copy + Into<Option<EdgeIndex>>,
+    TEdge: Copy + Into<Option<EdgeIndex>> + 'static,
     EdgeIndex: Into<TEdge>;
 
 impl<TTrigger, TEdge> PartialEq for HeapElement<TTrigger, TEdge>
 where
-    TTrigger: Eq + Hash,
+    TTrigger: Eq + Hash + 'static,
     Arc<TTrigger>: Into<GraphPathTrigger>,
-    TEdge: Copy + Into<Option<EdgeIndex>>,
+    TEdge: Copy + Into<Option<EdgeIndex>> + 'static,
     EdgeIndex: Into<TEdge>,
 {
     fn eq(&self, other: &HeapElement<TTrigger, TEdge>) -> bool {
@@ -1874,18 +1939,18 @@ where
 
 impl<TTrigger, TEdge> Eq for HeapElement<TTrigger, TEdge>
 where
-    TTrigger: Eq + Hash,
+    TTrigger: Eq + Hash + 'static,
     Arc<TTrigger>: Into<GraphPathTrigger>,
-    TEdge: Copy + Into<Option<EdgeIndex>>,
+    TEdge: Copy + Into<Option<EdgeIndex>> + 'static,
     EdgeIndex: Into<TEdge>,
 {
 }
 
 impl<TTrigger, TEdge> PartialOrd for HeapElement<TTrigger, TEdge>
 where
-    TTrigger: Eq + Hash,
+    TTrigger: Eq + Hash + 'static,
     Arc<TTrigger>: Into<GraphPathTrigger>,
-    TEdge: Copy + Into<Option<EdgeIndex>>,
+    TEdge: Copy + Into<Option<EdgeIndex>> + 'static,
     EdgeIndex: Into<TEdge>,
 {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
@@ -1895,9 +1960,9 @@ where
 
 impl<TTrigger, TEdge> Ord for HeapElement<TTrigger, TEdge>
 where
-    TTrigger: Eq + Hash,
+    TTrigger: Eq + Hash + 'static,
     Arc<TTrigger>: Into<GraphPathTrigger>,
-    TEdge: Copy + Into<Option<EdgeIndex>>,
+    TEdge: Copy + Into<Option<EdgeIndex>> + 'static,
     EdgeIndex: Into<TEdge>,
 {
     fn cmp(&self, other: &Self) -> Ordering {
@@ -2423,6 +2488,7 @@ impl OpGraphPath {
         let span = debug_span!("Trying to advance {self} directly with {operation_element}");
         let _guard = span.enter();
         let tail_weight = self.graph.node_weight(self.tail)?;
+        println!("\t\t\t\t\tTrying to advance path directly with {}", operation_element);
         let QueryGraphNodeType::SchemaType(tail_type_pos) = &tail_weight.type_ else {
             // We cannot advance any operation from here. We need to take the initial non-collecting
             // edges first.
@@ -2433,6 +2499,8 @@ impl OpGraphPath {
             OpPathElement::Field(operation_field) => {
                 match tail_type_pos {
                     OutputTypeDefinitionPosition::Object(tail_type_pos) => {
+                        println!("Searching for edge {} on {} object type", operation_field, tail_type_pos);
+
                         // Just take the edge corresponding to the field, if it exists and can be
                         // used.
                         let Some(edge) =
@@ -2441,6 +2509,7 @@ impl OpGraphPath {
                             debug!(
                                 "No edge for field {operation_field} on object type {tail_weight}"
                             );
+                            println!("\t\t\t\t\t=> No edge for field {} on object type {}", operation_field, tail_type_pos);
                             return Ok((None, None));
                         };
 
@@ -3135,6 +3204,7 @@ impl Display for OpGraphPath {
         if head_is_root_node && self.edges.is_empty() {
             return write!(f, "_");
         }
+
         if !head_is_root_node {
             write!(f, "{head}")?;
         }
@@ -3208,6 +3278,7 @@ impl SimultaneousPaths {
                 "flat_cartesian_product: excessive number of combinations: {num_options}"
             )));
         }
+        println!("\t\t\tComputed {num_options} options");
         let mut product = Vec::with_capacity(num_options);
 
         // Compute the cartesian product.
@@ -3310,11 +3381,14 @@ impl SimultaneousPathsWithLazyIndirectPaths {
         // rare), which is why we save recomputation by caching the computed value in that case, but
         // in case it's different, we compute without caching.
         if *updated_context != self.context {
+            println!("\t\t\t\tdifferent context so need to compute paths");
             self.compute_indirect_paths(path_index, condition_resolver, override_conditions)?;
         }
         if let Some(indirect_paths) = &self.lazily_computed_indirect_paths[path_index] {
+            println!("\t\t\t\treturning indirect paths");
             Ok(indirect_paths.clone())
         } else {
+            println!("\t\t\t\tneed to compute indirect paths for {}", path_index);
             let new_indirect_paths =
                 self.compute_indirect_paths(path_index, condition_resolver, override_conditions)?;
             self.lazily_computed_indirect_paths[path_index] = Some(new_indirect_paths.clone());
@@ -3382,6 +3456,7 @@ impl SimultaneousPathsWithLazyIndirectPaths {
             "Trying to advance paths for operation: path = {}, operation = {operation_element}",
             self.paths
         );
+        println!("\t\tTrying to advance {:?} for operation {}", self.paths, operation_element);
         let span = debug_span!(" |");
         let _guard = span.enter();
         let updated_context = self.context.with_context_of(operation_element)?;
@@ -3395,12 +3470,14 @@ impl SimultaneousPathsWithLazyIndirectPaths {
             let span = debug_span!(" |");
             let gaurd = span.enter();
             let mut options = None;
+            println!("\t\t\tComputing options for {}", path);
             let should_reenter_subgraph = path.defer_on_tail.is_some()
                 && matches!(operation_element, OpPathElement::Field(_));
             if !should_reenter_subgraph {
                 debug!("Direct options");
                 let span = debug_span!(" |");
                 let gaurd = span.enter();
+                println!("\t\t\t\tDirect options");
                 let (advance_options, has_only_type_exploded_results) = path
                     .advance_with_operation_element(
                         supergraph_schema.clone(),
@@ -3411,6 +3488,10 @@ impl SimultaneousPathsWithLazyIndirectPaths {
                     )?;
                 debug!("{advance_options:?}");
                 drop(gaurd);
+
+                // advance options to string
+                println!("\t\t\t\t=> {}", Self::advance_options_to_string(&advance_options));
+
                 // If we've got some options, there are a number of cases where there is no point
                 // looking for indirect paths:
                 // - If the operation element is terminal: this means we just found a direct edge
@@ -3437,6 +3518,7 @@ impl SimultaneousPathsWithLazyIndirectPaths {
                         || matches!(operation_element, OpPathElement::InlineFragment(_))
                     {
                         debug!("Final options for {path}: {advance_options:?}");
+                        println!("\t\t\t\t=> Final options for {}: {}", path, Self::advance_options_to_string(&Some(advance_options.clone())));
                         // Note that if options is empty, that means this particular "branch" is
                         // unsatisfiable, so we should just ignore it.
                         if !advance_options.is_empty() {
@@ -3453,6 +3535,9 @@ impl SimultaneousPathsWithLazyIndirectPaths {
             // defer), that's ok, we'll just try with non-collecting edges.
             let mut options = options.unwrap_or_else(Vec::new);
             if let OpPathElement::Field(operation_field) = operation_element {
+                let span = debug_span!("Computing indirect paths:");
+                let _gaurd = span.enter();
+                println!("\t\t\tComputing indirect paths:");
                 // Add whatever options can be obtained by taking some non-collecting edges first.
                 let paths_with_non_collecting_edges = self
                     .indirect_options(
@@ -3549,6 +3634,7 @@ impl SimultaneousPathsWithLazyIndirectPaths {
                     }
                 } else {
                     debug!("no indirect paths");
+                    println!("\t\t\tno indirect paths");
                 }
             }
 
@@ -3587,6 +3673,21 @@ impl SimultaneousPathsWithLazyIndirectPaths {
         let all_options = SimultaneousPaths::flat_cartesian_product(options_for_each_path)?;
         debug!("{all_options:?}");
         Ok(Some(self.create_lazy_options(all_options, updated_context)))
+    }
+
+    fn advance_options_to_string(advance_options: &Option<Vec<SimultaneousPaths>>) -> String {
+        if advance_options.is_none() {
+            "<no options>".to_string()
+        } else {
+            let opts = advance_options.clone().unwrap();
+            if opts.len() == 0 {
+                "<unsatisfiable branch>".to_string()
+            } else if opts.len() == 1 {
+                format!("[{}]", opts[0])
+            } else {
+                format!("{:?}", opts)
+            }
+        }
     }
 }
 

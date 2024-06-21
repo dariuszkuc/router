@@ -1242,6 +1242,11 @@ impl NamedFragments {
         // fragment, or none will have been optimized away so we'll exit above).
         let reduced_selection_set = selection_set.retain_fragments(self)?;
 
+        println!("NamedFragments->reduce_inner->BEFORE NORMALIZE SELECTION SET\n{}", reduced_selection_set);
+        println!("NamedFragments->reduce_inner->BEFORE NORMALIZE FRAGMENTS");
+        for fragment in self.fragments.values() {
+            println!("{}", fragment);
+        }
         // Expanding fragments could create some "inefficiencies" that we wouldn't have if we
         // hadn't re-optimized the fragments to de-optimize it later, so we do a final "flatten"
         // pass to remove those.
@@ -1524,6 +1529,7 @@ impl Operation {
 
         // Optimize the operation's selection set by re-using existing fragments.
         let before_optimization = self.selection_set.clone();
+        println!("OPTIMIZE_INTERNAL\nBEFORE\n{}", before_optimization);
         self.selection_set
             .reuse_fragments(&ReuseContext::for_operation(fragments, &self.variables))?;
         if before_optimization == self.selection_set {
@@ -1532,8 +1538,17 @@ impl Operation {
 
         // Optimize the named fragment definitions by dropping low-usage ones.
         let mut final_fragments = fragments.clone();
+        for f in final_fragments.fragments.values() {
+            println!("{}", f);
+        }
+
         let final_selection_set =
             final_fragments.reduce(&self.selection_set, min_usages_to_optimize)?;
+
+        println!("\n\nAFTER\n{}", final_selection_set);
+        for f in final_fragments.fragments.values() {
+            println!("{}", f);
+        }
 
         self.selection_set = final_selection_set;
         self.named_fragments = final_fragments;

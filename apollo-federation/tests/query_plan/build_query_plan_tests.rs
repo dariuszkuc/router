@@ -31,6 +31,11 @@ fn some_name() {
 }
 */
 
+use std::fs;
+use apollo_compiler::ExecutableDocument;
+use apollo_federation::query_plan::query_planner::{QueryPlanner, QueryPlannerConfig};
+use apollo_federation::Supergraph;
+
 mod debug_max_evaluated_plans_configuration;
 mod defer;
 mod fetch_operation_names;
@@ -51,6 +56,21 @@ mod requires;
 mod shareable_root_fields;
 mod subscriptions;
 // TODO: port the rest of query-planner-js/src/__tests__/buildPlan.test.ts
+
+#[test]
+fn integration_test() {
+    let sdl = fs::read_to_string("/Users/dkuc/Development/router/supergraph.graphqls").unwrap();
+    let supergraph = Supergraph::new(&sdl).unwrap();
+    let query = fs::read_to_string("/Users/dkuc/Development/router/query.graphql").unwrap();
+
+    let mut config = QueryPlannerConfig::default();
+    config.reuse_query_fragments = false;
+    config.generate_query_fragments = true;
+    let planner = QueryPlanner::new(&supergraph, config).unwrap();
+    let operation = ExecutableDocument::parse_and_validate(&supergraph.schema.schema(), &query, "query.graphql").unwrap();
+    let query_plan = planner.build_query_plan(&operation, None).unwrap();
+    println!("{}", query_plan);
+}
 
 #[test]
 fn pick_keys_that_minimize_fetches() {

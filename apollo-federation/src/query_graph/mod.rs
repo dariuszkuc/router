@@ -7,7 +7,7 @@ use apollo_compiler::collections::IndexMap;
 use apollo_compiler::collections::IndexSet;
 use apollo_compiler::schema::NamedType;
 use apollo_compiler::Name;
-use petgraph::graph::DiGraph;
+use petgraph::graph::{DiGraph, Edge};
 use petgraph::graph::EdgeIndex;
 use petgraph::graph::EdgeReference;
 use petgraph::graph::NodeIndex;
@@ -202,6 +202,13 @@ pub(crate) struct OverrideCondition {
 impl Display for OverrideCondition {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} = {}", self.label, self.condition)
+    }
+}
+
+impl QueryGraphEdge {
+    fn display(&self, edge_id: &EdgeIndex, graph: &QueryGraph) -> String {
+        let (h, t) = graph.edge_endpoints_weight(edge_id.clone()).expect("should have tail and head");
+        format!("{h} -> {t} ({self})")
     }
 }
 
@@ -421,6 +428,14 @@ impl QueryGraph {
             }
             .into()
         })
+    }
+
+    pub(crate) fn edge_endpoints_weight(
+        &self,
+        edge: EdgeIndex,
+    ) -> Result<(&QueryGraphNode, &QueryGraphNode), FederationError> {
+        let (head, tail) = self.edge_endpoints(edge)?;
+        Ok((self.node_weight(head)?, self.node_weight(tail)?))
     }
 
     fn schema(&self) -> Result<&ValidFederationSchema, FederationError> {
@@ -680,8 +695,11 @@ impl QueryGraph {
         field: &Field,
         override_conditions: &EnabledOverrideConditions,
     ) -> Option<EdgeIndex> {
+        let n = self.node_weight(node).unwrap();
+        println!("edge_for_field->node {} searching for field {}", n, field);
         let mut candidates = self.out_edges(node).into_iter().filter_map(|edge_ref| {
             let edge_weight = edge_ref.weight();
+            // println!("edge_for_field->candidate {}", edge_weight);
             let QueryGraphEdgeTransition::FieldCollection {
                 field_definition_position,
                 ..

@@ -277,10 +277,20 @@ mod tests {
 
         fn on_plan_generated(
             &self,
-            _plan: &Plan,
-            _cost: QueryPlanCost,
-            _prev_cost: Option<QueryPlanCost>,
+            plan: &Plan,
+            cost: QueryPlanCost,
+            prev_cost: Option<QueryPlanCost>,
         ) {
+            if prev_cost.is_none() {
+                println!("Computed plan with cost ${cost}: {:?}", plan)
+            } else {
+                let prev_cost = prev_cost.clone().unwrap();
+                if cost > prev_cost {
+                    println!("Ignoring plan with cost ${cost} (a better plan with cost ${prev_cost} exists): {:?}", plan);
+                } else {
+                    println!("Found better plan with cost ${cost} (previous had cost ${prev_cost}: {:?}", plan)
+                }
+            }
         }
     }
 

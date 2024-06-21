@@ -124,6 +124,7 @@ where
         node: &mut FetchDependencyGraphNode,
         handled_conditions: &Conditions,
     ) -> Result<TProcessed, FederationError> {
+        // println!("\t\t\t\tFetchDependencyGraphProcessor->on_node->processing node {:?}", node);
         (*self).on_node(query_graph, node, handled_conditions)
     }
     fn on_conditions(&mut self, conditions: &Conditions, value: TProcessed) -> TProcessed {
@@ -165,7 +166,9 @@ impl FetchDependencyGraphProcessor<QueryPlanCost, QueryPlanCost>
         node: &mut FetchDependencyGraphNode,
         _handled_conditions: &Conditions,
     ) -> Result<QueryPlanCost, FederationError> {
-        Ok(FETCH_COST + node.cost()?)
+        let result = FETCH_COST + node.cost()?;
+        // println!("\t\t\t\tFetchDependencyGraphToCostProcessor->on_node->processing node {:?} new cost {}", node, result);
+        Ok(result)
     }
 
     /// We don't take conditions into account in costing for now
@@ -186,7 +189,9 @@ impl FetchDependencyGraphProcessor<QueryPlanCost, QueryPlanCost>
         &mut self,
         values: impl IntoIterator<Item = QueryPlanCost>,
     ) -> QueryPlanCost {
-        parallel_cost(values)
+        let result = parallel_cost(values);
+        // println!("\t\t\t\tFetchDependencyGraphToCostProcessor->on_node->reducing parallel new cost {}", result);
+        result
     }
 
     /// For sequences, we want to heavily favor "shorter" pipelines of fetches
@@ -198,7 +203,9 @@ impl FetchDependencyGraphProcessor<QueryPlanCost, QueryPlanCost>
         &mut self,
         values: impl IntoIterator<Item = QueryPlanCost>,
     ) -> QueryPlanCost {
-        sequence_cost(values)
+        let result = sequence_cost(values);
+        // println!("\t\t\t\tFetchDependencyGraphToCostProcessor->on_node->reducing sequence new cost {}", result);
+        result
     }
 
     /// This method exists so we can inject the necessary information for deferred block when
@@ -272,6 +279,7 @@ impl FetchDependencyGraphProcessor<Option<PlanNode>, DeferredDeferBlock>
         node: &mut FetchDependencyGraphNode,
         handled_conditions: &Conditions,
     ) -> Result<Option<PlanNode>, FederationError> {
+        // println!("\t\t\t\tFetchDependencyGraphToQueryPlanProcessor->on_node->processing node {:?}", node);
         let op_name = self.operation_name.as_ref().map(|name| {
             let counter = self.counter;
             self.counter += 1;
@@ -279,14 +287,20 @@ impl FetchDependencyGraphProcessor<Option<PlanNode>, DeferredDeferBlock>
             // `name` was already a valid name so this concatenation should be too
             Name::new(&format!("{name}__{subgraph}__{counter}")).unwrap()
         });
-        node.to_plan_node(
+        let result = node.to_plan_node(
             query_graph,
             handled_conditions,
             &self.variable_definitions,
             &self.operation_directives,
             &mut self.operation_compression,
             op_name,
-        )
+        )?;
+        if result.is_none() {
+            println!("on_node->returning NONE");
+        } else {
+            println!("on_node->returning {}", result.clone().unwrap());
+        }
+        Ok(result)
     }
 
     fn on_conditions(
@@ -300,8 +314,11 @@ impl FetchDependencyGraphProcessor<Option<PlanNode>, DeferredDeferBlock>
                 // Note that currently `ConditionNode` only works for variables
                 // (`ConditionNode.condition` is expected to be a variable name and nothing else).
                 // We could change that, but really, why have a trivial `ConditionNode`
-                // when we can optimise things righ away.
-                condition.then_some(value)
+                // when we can optimise things right away.
+                println!("on_condition->{condition} for {value}");
+                let result = condition.then_some(value);
+                println!("on_condition->returning result is_some={}", result.is_some());
+                result
             }
             Conditions::Variables(variables) => {
                 for (name, negated) in variables.iter() {
@@ -467,10 +484,13 @@ fn flat_wrap_nodes(
     let mut iter = nodes.into_iter().flatten();
     let first = iter.next()?;
     let Some(second) = iter.next() else {
+        println!("flat_wrap_nodes->return first item {first}");
         return Some(first.clone());
     };
     let mut nodes = Vec::new();
+    println!("flat_wrap_nodes");
     for node in [first, second].into_iter().chain(iter) {
+        println!("node {node}");
         match (kind, node) {
             (NodeKind::Parallel, PlanNode::Parallel(inner)) => {
                 nodes.extend(inner.nodes.iter().cloned())
@@ -482,7 +502,13 @@ fn flat_wrap_nodes(
         }
     }
     Some(match kind {
-        NodeKind::Parallel => PlanNode::Parallel(ParallelNode { nodes }),
-        NodeKind::Sequence => PlanNode::Sequence(SequenceNode { nodes }),
+        NodeKind::Parallel => {
+            println!("wrapping in parallel node");
+            PlanNode::Parallel(ParallelNode { nodes })
+        },
+        NodeKind::Sequence => {
+            println!("wrapping in sequence node");
+            PlanNode::Sequence(SequenceNode { nodes })
+        },
     })
 }

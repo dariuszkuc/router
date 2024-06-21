@@ -1367,3 +1367,119 @@ fn it_preserves_nested_fragments_when_outer_one_has_directives_and_is_eliminated
       "###
     );
 }
+
+#[test]
+fn it_works_with_normalized_selection_sets_with_fragments() {
+    let planner = planner!(
+        Subgraph1: r#"
+          type Query {
+            a: A
+          }
+
+          type A {
+            a1: String
+            a2: Foo
+            a3: Foo
+          }
+
+          type A2 implements Foo {
+            foo: String
+            child: Foo
+            child2: Foo
+          }
+
+          type A3 implements Foo {
+            foo: String
+            child: Foo
+            child2: Foo
+          }
+        "#,
+    );
+    assert_plan!(
+        &planner,
+        r#"
+          query {
+            a {
+              ... on A1 {
+                ...FooSelect
+              }
+              ... on A2 {
+                ...FooSelect
+              }
+              ... on A3 {
+                ...FooSelect
+              }
+            }
+          }
+
+          fragment FooSelect on Foo {
+            __typename
+            foo
+            child {
+              ...FooChildSelect
+            }
+            child2 {
+              ...FooChildSelect
+            }
+          }
+
+          fragment FooChildSelect on Foo {
+            __typename
+            foo
+            child {
+              child {
+                child {
+                  foo
+                }
+              }
+            }
+          }
+        "#,
+        @r###"
+        QueryPlan {
+          Fetch(service: "Subgraph1") {
+            {
+              a {
+                __typename
+                ... on A1 {
+                  ...FooSelect
+                }
+                ... on A2 {
+                  ...FooSelect
+                }
+                ... on A3 {
+                  ...FooSelect
+                }
+              }
+            }
+
+            fragment FooChildSelect on Foo {
+              __typename
+              foo
+              child {
+                __typename
+                child {
+                  __typename
+                  child {
+                    __typename
+                    foo
+                  }
+                }
+              }
+            }
+
+            fragment FooSelect on Foo {
+              __typename
+              foo
+              child {
+                ...FooChildSelect
+              }
+              child2 {
+                ...FooChildSelect
+              }
+            }
+          },
+        }
+      "###
+    );
+}

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use apollo_compiler::collections::IndexSet;
+use itertools::Itertools;
 use petgraph::graph::EdgeIndex;
 use petgraph::graph::NodeIndex;
 use serde::Serialize;
@@ -284,6 +285,14 @@ impl<'a: 'b, 'b> QueryPlanningTraversal<'a, 'b> {
         )
     )]
     fn find_best_plan_inner(&mut self) -> Result<Option<&BestQueryPlanInfo>, FederationError> {
+        // debug stack
+        if self.is_top_level {
+            println!("Query planning open branches:");
+            for branch in &self.open_branches {
+                println!("\t- {}", branch.selections.iter().map(|s| s.to_string()).join(" "));
+                println!("\t\t- {}", branch.open_branch.0.iter().map(|o| o.paths.to_string()).join("\n\t\t- "));
+            }
+        }
         while let Some(mut current_branch) = self.open_branches.pop() {
             let Some(current_selection) = current_branch.selections.pop() else {
                 return Err(FederationError::internal(
@@ -327,6 +336,7 @@ impl<'a: 'b, 'b> QueryPlanningTraversal<'a, 'b> {
         options: &mut Vec<SimultaneousPathsWithLazyIndirectPaths>,
     ) -> Result<(bool, Option<OpenBranchAndSelections>), FederationError> {
         let operation_element = selection.element()?;
+        println!("\tHandling open branch: {}", operation_element);
         let mut new_options = vec![];
         let mut no_followups: bool = false;
 
@@ -467,6 +477,7 @@ impl<'a: 'b, 'b> QueryPlanningTraversal<'a, 'b> {
                 //   will not be able to reuse named fragments as often as we should (we add
                 //   `__typename` for abstract types on the "normal path" and so we add them too to
                 //   named fragments; as such, we need them here too).
+                println!("selection set is fully local");
                 let new_selection_set = Arc::new(
                     selection_set
                         .add_back_typename_in_attachments()?
@@ -493,6 +504,7 @@ impl<'a: 'b, 'b> QueryPlanningTraversal<'a, 'b> {
                 ));
             }
         } else {
+            println!("branch finished");
             self.record_closed_branch(ClosedBranch(
                 new_options
                     .into_iter()
@@ -618,25 +630,38 @@ impl<'a: 'b, 'b> QueryPlanningTraversal<'a, 'b> {
         if self.closed_branches.is_empty() {
             return Ok(());
         }
+
+        // We now sort the options within each branch, putting those with the least amount of subgraph jumps first.
+        // The idea is that for each branch taken individually, the option with the least jumps is going to be
+        // the most efficient, and while it is not always the case that the best plan is built for those
+        // individual bests, they are still statistically more likely to be part of the best plan. So putting
+        // them first has 2 benefits for the rest of this method:
+        // 1. if we end up cutting some options of a branch below (due to having too many possible plans),
+        //   we'll cut the last option first (we `pop()`), so better cut what it the least likely to be good.
+        // 2. when we finally generate the plan, we use the cost of previously computed plans to cut computation
+        //   early when possible (see `generateAllPlansAndFindBest`), so there is a premium in generating good
+        //   plans early (it cuts more computation), and putting those more-likely-to-be-good options first helps
+        //   this.
         self.sort_options_in_closed_branches()?;
         self.reduce_options_if_needed();
-
+        
         snapshot!(
             name = "ClosedBranches",
             self.closed_branches,
             "closed_branches_after_reduce"
         );
 
-        // debug log
-        // self.closed_branches
-        //     .iter()
-        //     .enumerate()
-        //     .for_each(|(i, branch)| {
-        //         println!("{i}:");
-        //         branch.0.iter().for_each(|path| {
-        //             println!("  - {path}");
-        //         });
-        //     });
+        // debug! log
+        println!("All branches:");
+        self.closed_branches
+            .iter()
+            .enumerate()
+            .for_each(|(i, branch)| {
+                println!("{i}:");
+                branch.0.iter().for_each(|path| {
+                    println!("  - {path}");
+                });
+            });
 
         // Note that usually we'll have a majority of branches with just one option. We can group them in
         // a PathTree first with no fuss. When then need to do a cartesian product between this created
@@ -817,6 +842,7 @@ impl<'a: 'b, 'b> QueryPlanningTraversal<'a, 'b> {
 
         let mut plan_count = product_of_closed_branches_len(&self.closed_branches);
         // debug!("Query has {plan_count} possible plans");
+        println!("Query has {plan_count} possible plans");
 
         let max_evaluated_plans =
             u32::from(self.parameters.config.debug.max_evaluated_plans) as usize;
@@ -843,6 +869,7 @@ impl<'a: 'b, 'b> QueryPlanningTraversal<'a, 'b> {
             }
 
             // debug!("Reduced plans to consider to {plan_count} plans");
+            println!("Reduced plans to consider to {plan_count} plans");
         }
 
         if self.is_top_level {
@@ -1070,28 +1097,28 @@ impl<'a: 'b, 'b> PlanBuilder<PlanInfo, Arc<OpPathTree>> for QueryPlanningTravers
 
     fn on_plan_generated(
         &self,
-        _plan_info: &PlanInfo,
-        _cost: QueryPlanCost,
-        _prev_cost: Option<QueryPlanCost>,
+        plan_info: &PlanInfo,
+        cost: QueryPlanCost,
+        prev_cost: Option<QueryPlanCost>,
     ) {
         // debug log
-        // if prev_cost.is_none() {
-        //     print!("Computed plan with cost {}: {}", cost, plan_tree);
-        // } else if cost > prev_cost.unwrap() {
-        //     print!(
-        //         "Ignoring plan with cost {} (a better plan with cost {} exists): {}",
-        //         cost,
-        //         prev_cost.unwrap(),
-        //         plan_tree
-        //     );
-        // } else {
-        //     print!(
-        //         "Found better with cost {} (previous had cost {}): {}",
-        //         cost,
-        //         prev_cost.unwrap(),
-        //         plan_tree
-        //     );
-        // }
+        if prev_cost.is_none() {
+            println!("Computed plan with cost {}: {:?}", cost, plan_info);
+        } else if cost > prev_cost.unwrap() {
+            println!(
+                "Ignoring plan with cost {} (a better plan with cost {} exists): {:?}",
+                cost,
+                prev_cost.unwrap(),
+                plan_info
+            );
+        } else {
+            println!(
+                "Found better plan with cost {} (previous had cost {}): {:?}",
+                cost,
+                prev_cost.unwrap(),
+                plan_info
+            );
+        }
     }
 }
 

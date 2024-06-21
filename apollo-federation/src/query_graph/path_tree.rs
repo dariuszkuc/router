@@ -570,13 +570,36 @@ mod tests {
     #[test]
     fn path_tree_display() {
         let src = r#"
-        type Query
-        {
-            t: T
+        schema @link(url: "https://specs.apollo.dev/link/v1.0") @link(url: "https://specs.apollo.dev/join/v0.3", for: EXECUTION) {
+            query: Query
         }
 
-        type T
-        {
+        directive @join__field(graph: join__Graph, requires: join__FieldSet, provides: join__FieldSet, type: String, external: Boolean, override: String, usedOverridden: Boolean) repeatable on FIELD_DEFINITION | INPUT_FIELD_DEFINITION
+
+        directive @join__graph(name: String!, url: String!) on ENUM_VALUE
+
+        directive @join__type(graph: join__Graph!, key: join__FieldSet, extension: Boolean! = false, resolvable: Boolean! = true, isInterfaceObject: Boolean! = false) repeatable on ENUM | INPUT_OBJECT | INTERFACE | OBJECT | SCALAR | UNION
+
+        directive @link(url: String, as: String, for: link__Purpose, import: [link__Import]) repeatable on SCHEMA
+
+        enum join__Graph {
+            SUBGRAPH1 @join__graph(name: "Subgraph1", url: "https://subgraph1")
+        }
+
+        enum link__Purpose {
+            SECURITY
+            EXECUTION
+        }
+
+        scalar join__FieldSet
+
+        scalar link__Import
+
+        type Query @join__type(graph: SUBGRAPH1) {
+            t: T @join__field(graph: SUBGRAPH1)
+        }
+
+        type T @join__type(graph: SUBGRAPH1) {
             otherId: ID!
             id: ID!
         }
@@ -597,6 +620,8 @@ mod tests {
 
         let path1 =
             build_graph_path(&query_graph, SchemaRootDefinitionKind::Query, &["t", "id"]).unwrap();
+        // relied on printing head when root_kind.is_some to get the `Query(Test)*`
+        // missing transition to T because head is a root and we don't have subsequent one
         assert_eq!(
             path1.to_string(),
             "Query(Test) --[t]--> T(Test) --[id]--> ID(Test)"

@@ -979,6 +979,7 @@ impl FederatedQueryGraphBuilder {
     }
 
     fn build(mut self) -> Result<QueryGraph, FederationError> {
+        // TODO we are adding edges out of order
         self.copy_subgraphs();
         self.add_federated_root_nodes()?;
         self.copy_types_to_nodes()?;
@@ -1076,6 +1077,7 @@ impl FederatedQueryGraphBuilder {
                     if *other_source == self.base.query_graph.current_source {
                         continue;
                     }
+                    // TODO this is suspect?
                     if let Some(other_root_node) = other_root_kinds_to_nodes.get(root_kind) {
                         new_edges.push(QueryGraphEdgeData {
                             head: *root_node,
@@ -1981,24 +1983,29 @@ impl FederatedQueryGraphBuilder {
                             followup_edge_weight.transition,
                             QueryGraphEdgeTransition::KeyResolution
                         ) {
-                            let Some(conditions) = &edge_weight.conditions else {
-                                return Err(SingleFederationError::Internal {
-                                    message: "Key resolution edge unexpectedly missing conditions"
-                                        .to_owned(),
+                            if let (Some(conditions), Some(followup_conditions)) = (&edge_weight.conditions, &followup_edge_weight.conditions) {
+                                if conditions == followup_conditions {
+                                    continue;
                                 }
-                                .into());
-                            };
-                            let Some(followup_conditions) = &followup_edge_weight.conditions else {
-                                return Err(SingleFederationError::Internal {
-                                    message: "Key resolution edge unexpectedly missing conditions"
-                                        .to_owned(),
-                                }
-                                .into());
-                            };
-
-                            if conditions == followup_conditions {
-                                continue;
                             }
+
+                            // let Some(conditions) = &edge_weight.conditions else {
+                            //     return Err(SingleFederationError::Internal {
+                            //         message: "Key resolution edge unexpectedly missing conditions"
+                            //             .to_owned(),
+                            //     }
+                            //     .into());
+                            // };
+                            // let Some(followup_conditions) = &followup_edge_weight.conditions else {
+                            //     return Err(SingleFederationError::Internal {
+                            //         message: "Key resolution edge unexpectedly missing conditions"
+                            //             .to_owned(),
+                            //     }
+                            //     .into());
+                            // };
+                            // if conditions == followup_conditions {
+                            //     continue;
+                            // }
                         }
                     }
                     QueryGraphEdgeTransition::RootTypeResolution { .. } => {
@@ -2034,6 +2041,11 @@ impl FederatedQueryGraphBuilder {
                 .non_trivial_followup_edges
                 .insert(edge, non_trivial_followups);
         }
+        println!("PRECOMPUTED NON TRIVIAL FOLLOW UP EDGES FOR {} EDGES", self.base.query_graph.non_trivial_followup_edges.len());
+        // for (edge, non_trivial_followups) in &self.base.query_graph.non_trivial_followup_edges {
+        //     println!("edge {} has {} non_trivial_followups", edge.index(), non_trivial_followups.len());
+        // }
+
         Ok(())
     }
 }
