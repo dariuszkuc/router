@@ -27,7 +27,6 @@ use petgraph::stable_graph::StableDiGraph;
 use petgraph::visit::EdgeRef;
 use petgraph::visit::IntoNodeReferences;
 use serde::Serialize;
-
 use crate::error::FederationError;
 use crate::error::SingleFederationError;
 use crate::link::graphql_definition::DeferDirectiveArguments;
@@ -909,8 +908,11 @@ impl FetchDependencyGraph {
         for start_index in self.children_of(node_index) {
             stack.extend(self.children_of(start_index));
             while let Some(v) = stack.pop() {
-                for edge in self.graph.edges_connecting(node_index, v) {
-                    acc.insert(edge.id());
+                // TODO THIS FIXES INFINITE RECURSION
+                if self.is_parent_of(node_index, v) {
+                    for edge in self.graph.edges_connecting(node_index, v) {
+                        acc.insert(edge.id());
+                    }
                 }
 
                 stack.extend(self.children_of(v));
@@ -926,6 +928,7 @@ impl FetchDependencyGraph {
         let mut redundant_edges = HashSet::new();
         self.collect_redundant_edges(node_index, &mut redundant_edges);
 
+        self.on_modification();
         for edge in redundant_edges {
             self.graph.remove_edge(edge);
         }
@@ -984,9 +987,11 @@ impl FetchDependencyGraph {
             self.collect_redundant_edges(node_index, &mut redundant_edges);
         }
 
-        for edge in redundant_edges {
-            // PORT_NOTE: JS version calls `FetchGroup.removeChild`, which calls onModification.
+        // PORT_NOTE: JS version calls `FetchGroup.removeChild`, which calls onModification.
+        if !redundant_edges.is_empty() {
             self.on_modification();
+        }
+        for edge in redundant_edges {
             self.graph.remove_edge(edge);
         }
 
@@ -2128,18 +2133,18 @@ impl FetchDependencyGraph {
         let node = self.node_weight(node_id)?;
         let parent = self.node_weight(parent_relation.parent_node_id)?;
         let Some(parent_op_path) = &parent_relation.path_in_parent else {
-            return Err(FederationError::internal("Parent operation path is empty"));
+            return Ok(false);
+            // return Err(FederationError::internal("Parent operation path is empty"));
         };
         let type_at_path = self.type_at_path(
             &parent.selection_set.selection_set.type_position,
             &parent.selection_set.selection_set.schema,
             parent_op_path,
         )?;
-        let new_node_is_unneeded = parent_relation.path_in_parent.is_some()
-            && node
-                .selection_set
-                .selection_set
-                .can_rebase_on(&type_at_path, &parent.selection_set.selection_set.schema)?;
+        let new_node_is_unneeded = node
+            .selection_set
+            .selection_set
+            .can_rebase_on(&type_at_path, &parent.selection_set.selection_set.schema)?;
         Ok(new_node_is_unneeded)
     }
 
@@ -4009,11 +4014,13 @@ fn handle_requires(
         // Note that we know the conditions will include a key for our node so we can resume properly.
         let fetch_node = dependency_graph.node_weight(fetch_node_id)?;
         let target_subgraph = fetch_node.subgraph_name.clone();
+        // TODO in JS impl we did not pass defer in this case
         let defer_ref = fetch_node.defer_ref.clone();
         let new_node_id = dependency_graph.new_key_node(
             &target_subgraph,
             fetch_node_path.response_path.clone(),
             defer_ref,
+            // None,
         )?;
         let new_node = dependency_graph.node_weight(new_node_id)?;
         let merge_at = new_node.merge_at.clone();

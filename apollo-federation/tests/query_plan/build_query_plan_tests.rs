@@ -30,6 +30,11 @@ fn some_name() {
     );
 }
 */
+use std::fs;
+use apollo_compiler::ExecutableDocument;
+use apollo_federation::query_plan::query_planner::{QueryPlanner, QueryPlannerConfig};
+use apollo_federation::Supergraph;
+use tracing_test::traced_test;
 
 mod debug_max_evaluated_plans_configuration;
 mod fetch_operation_names;
@@ -50,6 +55,24 @@ mod shareable_root_fields;
 mod subscriptions;
 
 // TODO: port the rest of query-planner-js/src/__tests__/buildPlan.test.ts
+#[test]
+#[traced_test]
+fn integration_test() {
+    // let sdl = fs::read_to_string("/Users/dkuc/Downloads/ascension.schema").unwrap();
+    // let sdl = fs::read_to_string("/Users/dkuc/Development/composer-tool/yum_supergraph.graphql").unwrap();
+    // let sdl = fs::read_to_string("/Users/dkuc/Development/federation-performance-harness/8300d96c-4d04-4a10-8ab6-40fc77254509/supergraph.graphqls").unwrap();
+    let sdl = fs::read_to_string("/Users/dkuc/Development/router/studio-supergraph.graphqls").unwrap();
+    let supergraph = Supergraph::new(&sdl).unwrap();
+    // let query = fs::read_to_string("/Users/dkuc/Downloads/ascension.operation").unwrap();
+    // let query = fs::read_to_string("/Users/dkuc/Development/federation-performance-harness/8300d96c-4d04-4a10-8ab6-40fc77254509/RecirculationQuery.graphql").unwrap();
+    let query = fs::read_to_string("/Users/dkuc/Development/router/studio-query.graphql").unwrap();
+
+    let planner = QueryPlanner::new(&supergraph, QueryPlannerConfig::default()).unwrap();
+    let operation = ExecutableDocument::parse_and_validate(&supergraph.schema.schema(), &query, "query.graphql").unwrap();
+    let query_plan = planner.build_query_plan(&operation, None).unwrap();
+    println!("{}", query_plan);
+}
+
 
 #[test]
 fn pick_keys_that_minimize_fetches() {
