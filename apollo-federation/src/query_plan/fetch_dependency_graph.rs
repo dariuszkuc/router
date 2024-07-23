@@ -2516,7 +2516,9 @@ impl FetchDependencyGraphNode {
         // hasInputs ? `${toValidGraphQLName(subgraphName)}-${mergeAt?.join('::') ?? ''}` : undefined,
         // ```
         // TODO: We could use a numeric hash key in Rust, instead of a string key as done in JS.
-        self.inputs.as_ref()?;
+        if self.inputs.is_none() {
+            return None;
+        }
         let subgraph_name = &self.subgraph_name;
         let merge_at_str = match self.merge_at {
             Some(ref merge_at) => merge_at
