@@ -906,17 +906,24 @@ impl FetchDependencyGraph {
     /// Find redundant edges coming out of a node. See `remove_redundant_edges`.
     fn collect_redundant_edges(&self, node_index: NodeIndex, acc: &mut HashSet<EdgeIndex>) {
         let mut stack = vec![];
+        // JS PORT NOTE: JS was doing removal of edges in place which eliminates potential cycles,
+        // since in RS we remove AFTER we process all nodes, we need to be able to break out of cycles
+        let mut processed_items = HashSet::new();
         for start_index in self.children_of(node_index) {
-            stack.extend(self.children_of(start_index));
+            for child in self.children_of(start_index) {
+                if processed_items.insert(child) {
+                    stack.push(child);
+                }
+            }
             while let Some(v) = stack.pop() {
-                // TODO THIS FIXES INFINITE RECURSION
-                if self.is_parent_of(node_index, v) {
-                    for edge in self.graph.edges_connecting(node_index, v) {
-                        acc.insert(edge.id());
+                for edge in self.graph.edges_connecting(node_index, v) {
+                    acc.insert(edge.id());
+                }
+                for descendant in self.children_of(v) {
+                    if processed_items.insert(descendant) {
+                        stack.push(descendant);
                     }
                 }
-
-                stack.extend(self.children_of(v));
             }
         }
     }
@@ -984,17 +991,19 @@ impl FetchDependencyGraph {
         // Two phases for mutability reasons: first all redundant edges coming out of all nodes are
         // collected and then they are all removed.
         let mut redundant_edges = HashSet::new();
-        for node_index in self.graph.node_indices() {
-            self.collect_redundant_edges(node_index, &mut redundant_edges);
+        let indices: Vec<NodeIndex> = self.graph.node_indices().collect();
+        for node_index in indices {
+            self.remove_redundant_edges(node_index);
+            // self.collect_redundant_edges(node_index, &mut redundant_edges);
         }
 
-        // PORT_NOTE: JS version calls `FetchGroup.removeChild`, which calls onModification.
-        if !redundant_edges.is_empty() {
-            self.on_modification();
-        }
-        for edge in redundant_edges {
-            self.graph.remove_edge(edge);
-        }
+        // // PORT_NOTE: JS version calls `FetchGroup.removeChild`, which calls onModification.
+        // if !redundant_edges.is_empty() {
+        //     self.on_modification();
+        // }
+        // for edge in redundant_edges {
+        //     self.graph.remove_edge(edge);
+        // }
 
         self.is_reduced = true;
     }
