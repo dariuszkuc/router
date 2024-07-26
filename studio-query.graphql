@@ -1,0 +1,28 @@
+query ChecksFiltersQuery(
+    $graphId: ID!
+    $authorsFilter: CheckFilterInput
+#    $subgraphsFilter: CheckFilterInput
+#    $branchesFilter: CheckFilterInput!
+#    $includeVariants: Boolean!
+) {
+#    me {
+#        id
+#    }
+    service(id: $graphId) {
+#        id
+        checksAuthorOptions(filter: $authorsFilter)
+        checksCreatedByOptions(filter: $authorsFilter) {
+#            id
+            name
+#            ... on User {
+#                fullName
+#            }
+        }
+#        checksSubgraphOptions(filter: $subgraphsFilter)
+#        checksBranchOptions(filter: $branchesFilter)
+#        variants @include(if: $includeVariants) {
+#            id
+#            name
+#        }
+    }
+}

@@ -1,0 +1,219 @@
+schema
+@link(url: "https://specs.apollo.dev/link/v1.0")
+@link(url: "https://specs.apollo.dev/join/v0.3", for: EXECUTION)
+@link(url: "https://specs.apollo.dev/inaccessible/v0.2", for: SECURITY)
+@link(url: "https://specs.apollo.dev/tag/v0.3")
+{
+  query: Query
+}
+
+directive @inaccessible on FIELD_DEFINITION | OBJECT | INTERFACE | UNION | ARGUMENT_DEFINITION | SCALAR | ENUM | ENUM_VALUE | INPUT_OBJECT | INPUT_FIELD_DEFINITION
+
+directive @join__enumValue(graph: join__Graph!) repeatable on ENUM_VALUE
+
+directive @join__field(graph: join__Graph, requires: join__FieldSet, provides: join__FieldSet, type: String, external: Boolean, override: String, usedOverridden: Boolean) repeatable on FIELD_DEFINITION | INPUT_FIELD_DEFINITION
+
+directive @join__graph(name: String!, url: String!) on ENUM_VALUE
+
+directive @join__implements(graph: join__Graph!, interface: String!) repeatable on OBJECT | INTERFACE
+
+directive @join__type(graph: join__Graph!, key: join__FieldSet, extension: Boolean! = false, resolvable: Boolean! = true, isInterfaceObject: Boolean! = false) repeatable on OBJECT | INTERFACE | UNION | ENUM | INPUT_OBJECT | SCALAR
+
+directive @join__unionMember(graph: join__Graph!, member: String!) repeatable on UNION
+
+directive @link(url: String, as: String, for: link__Purpose, import: [link__Import]) repeatable on SCHEMA
+
+directive @tag(name: String!) repeatable on FIELD_DEFINITION | OBJECT | INTERFACE | UNION | ARGUMENT_DEFINITION | SCALAR | ENUM | ENUM_VALUE | INPUT_OBJECT | INPUT_FIELD_DEFINITION | SCHEMA
+
+enum join__Graph {
+  BILLING @join__graph(name: "billing", url: "http://engine-billing.prod.svc.cluster.local/api/graphql")
+  IDENTITY @join__graph(name: "identity", url: "http://engine-identity.prod.svc.cluster.local/api/graphql")
+  KOTLIN @join__graph(name: "kotlin", url: "http://engine-graphql.prod.svc.cluster.local:8081/api/graphql")
+  REGISTRY @join__graph(name: "registry", url: "http://engine-registry.prod.svc.cluster.local/api/graphql")
+}
+
+scalar join__FieldSet
+
+scalar link__Import
+
+enum link__Purpose {
+  """
+  `SECURITY` features provide metadata necessary to securely resolve fields.
+  """
+  SECURITY
+
+  """
+  `EXECUTION` features provide metadata necessary for operation execution.
+  """
+  EXECUTION
+}
+
+"""
+An organization in Apollo Studio. Can have multiple members and graphs.
+"""
+type Account
+@join__type(graph: BILLING, key: "internalID", resolvable: true)
+@join__type(graph: IDENTITY, key: "id", resolvable: true)
+@join__type(graph: IDENTITY, key: "internalID", resolvable: true)
+@join__type(graph: KOTLIN, key: "id", resolvable: true)
+@join__type(graph: KOTLIN, key: "internalID", resolvable: true)
+@join__type(graph: REGISTRY, key: "id")
+{
+  """
+  Globally unique identifier, which isn't guaranteed stable (can be changed by administrators).
+  """
+  id: ID! @join__field(graph: IDENTITY) @join__field(graph: KOTLIN) @join__field(graph: REGISTRY) @tag(name: "platform-api")
+  """
+  Internal immutable identifier for the account. Only visible to Apollo admins (because it really
+  shouldn't be used in normal client apps).
+  """
+  internalID: ID! @join__field(graph: BILLING) @join__field(graph: IDENTITY) @join__field(graph: KOTLIN) @join__field(graph: REGISTRY)
+
+  currentPlan: BillingPlan! @join__field(graph: BILLING) @join__field(graph: IDENTITY) @join__field(graph: REGISTRY)
+  memberships: [AccountMembership!] @join__field(graph: IDENTITY, override: "kotlin") @join__field(graph: REGISTRY, external: true)
+}
+
+type AccountMembership
+@join__type(graph: IDENTITY)
+@join__type(graph: REGISTRY)
+{
+  account: Account! @join__field(graph: IDENTITY)
+  """If this membership is a free seat (based on role)"""
+  free: Boolean @join__field(graph: IDENTITY)
+  user: User! @join__field(graph: IDENTITY) @join__field(graph: REGISTRY, external: true)
+}
+
+type BillingPlan
+@join__type(graph: BILLING, key: "id", resolvable: true)
+@join__type(graph: IDENTITY)
+@join__type(graph: REGISTRY, key: "id", extension: true)
+{
+  id: ID! @join__field(graph: BILLING) @join__field(graph: REGISTRY)
+  persistedQueries: Boolean! @join__field(graph: BILLING) @join__field(graph: IDENTITY)
+  schemaValidation: Boolean! @join__field(graph: BILLING) @join__field(graph: REGISTRY, external: true)
+}
+
+"""Filter options available when listing checks."""
+input CheckFilterInput
+@join__type(graph: REGISTRY)
+@tag(name: "platform-api")
+{
+  """A list of git commiters. For cli triggered checks, this is the author."""
+  authors: [String!]
+  branches: [String!]
+  subgraphs: [String!]
+  variants: [String!]
+  ids: [String!]
+  includeProposalChecks: Boolean = false @tag(name: "apollo-internal")
+}
+
+"""
+An identity (such as a `User` or `Graph`) in Apollo Studio. See implementing types for details.
+"""
+interface Identity
+@join__type(graph: IDENTITY)
+@join__type(graph: KOTLIN)
+@join__type(graph: REGISTRY)
+@tag(name: "platform-api")
+{
+  """The identity's identifier, which is unique among objects of its type."""
+  id: ID!
+
+  """The identity's human-readable name."""
+  name: String! @join__field(graph: IDENTITY) @join__field(graph: KOTLIN) @join__field(graph: REGISTRY)
+}
+
+"""Queries defined by this subgraph"""
+type Query
+@join__type(graph: BILLING)
+@join__type(graph: IDENTITY)
+@join__type(graph: KOTLIN)
+@join__type(graph: REGISTRY)
+{
+  """Service by ID"""
+  service(id: ID!): Service @join__field(graph: KOTLIN)
+}
+
+"""
+A graph in Apollo Studio represents a graph in your organization.
+Each graph has one or more variants, which correspond to the different environments where that graph runs (such as staging and production).
+Each variant has its own GraphQL schema, which means schemas can differ between environments.
+"""
+type Service implements Identity
+@join__implements(graph: IDENTITY, interface: "Identity")
+@join__implements(graph: KOTLIN, interface: "Identity")
+@join__implements(graph: REGISTRY, interface: "Identity")
+@join__type(graph: IDENTITY, key: "id", resolvable: true)
+@join__type(graph: KOTLIN, key: "id", resolvable: true)
+@join__type(graph: REGISTRY, key: "id", extension: true)
+{
+  """The graph's globally unique identifier."""
+  id: ID! @tag(name: "platform-api")
+  name: String! @join__field(graph: IDENTITY) @join__field(graph: KOTLIN) @join__field(graph: REGISTRY, external: true) @tag(name: "platform-api")
+
+  """The organization that this graph belongs to."""
+  account: Account @join__field(graph: IDENTITY) @join__field(graph: KOTLIN) @join__field(graph: REGISTRY, external: true) @tag(name: "platform-api")
+
+  """
+  The same as 'account', but allows the PERSISTED_QUERY_PUBLISHER role to access it. Used
+  in @key in the persistedqueries subgraph to fetch information that the end user is not allowed
+  to directly request.
+  """
+  accountForPersistedQueriesSubgraph: Account @inaccessible @join__field(graph: KOTLIN)
+
+  """
+  List of options available for filtering checks for this graph by git committer.
+  If a filter is passed, constrains results to match the filter.
+  For cli triggered checks, this is the author.
+  """
+  checksAuthorOptions(filter: CheckFilterInput): [String!]! @join__field(graph: REGISTRY, requires: "roles { canCheckSchemas }\naccount { currentPlan { schemaValidation } }") @deprecated(reason: "Use checksCommitterOptions instead")
+
+  """
+  List of options available for filtering checks for this graph by created by field.
+  If a filter is passed, constrains results to match the filter.
+  For non cli triggered checks, this is the Studio User / author.
+  """
+  checksCreatedByOptions(filter: CheckFilterInput): [Identity!]! @join__field(graph: REGISTRY, requires: "roles { canCheckSchemas }\naccount { currentPlan { schemaValidation } memberships { user { id } } }")
+
+  """Describes the permissions that the active user has for this graph."""
+  roles: ServiceRoles @join__field(graph: IDENTITY) @join__field(graph: KOTLIN) @join__field(graph: REGISTRY, external: true) @tag(name: "platform-api")
+}
+
+"""
+Individual permissions for the current user when interacting with a particular Studio graph.
+"""
+type ServiceRoles
+@join__type(graph: IDENTITY, key: "service { id }", resolvable: false)
+@join__type(graph: KOTLIN, key: "service { id }", resolvable: true)
+@join__type(graph: REGISTRY)
+@tag(name: "platform-api")
+{
+  service: Service! @join__field(graph: IDENTITY, external: true) @join__field(graph: KOTLIN)
+
+  """
+  Whether the currently authenticated user is permitted to perform schema checks (i.e., run `rover (sub)graph check`).
+  """
+  canCheckSchemas: Boolean! @join__field(graph: KOTLIN) @join__field(graph: REGISTRY, external: true)
+}
+
+
+"""A registered Apollo Studio user."""
+type User implements Identity
+@join__implements(graph: IDENTITY, interface: "Identity")
+@join__implements(graph: KOTLIN, interface: "Identity")
+@join__implements(graph: REGISTRY, interface: "Identity")
+@join__type(graph: IDENTITY, key: "id", resolvable: true)
+@join__type(graph: KOTLIN, key: "id", resolvable: true)
+@join__type(graph: REGISTRY, key: "id", extension: true)
+{
+  """
+  The user's GitHub username, if they log in via GitHub. May be null even for GitHub users in some edge cases.
+  """
+  githubUsername: String @join__field(graph: IDENTITY, override: "kotlin")
+
+  """The user's unique ID."""
+  id: ID! @tag(name: "platform-api")
+  fullName: String! @join__field(graph: IDENTITY, override: "kotlin")
+  """The user's first and last name."""
+  name: String! @join__field(graph: IDENTITY, override: "kotlin") @join__field(graph: KOTLIN, usedOverridden: true) @join__field(graph: REGISTRY, external: true) @tag(name: "platform-api")
+}

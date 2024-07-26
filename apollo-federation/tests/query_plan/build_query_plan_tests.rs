@@ -56,7 +56,6 @@ mod subscriptions;
 
 // TODO: port the rest of query-planner-js/src/__tests__/buildPlan.test.ts
 #[test]
-#[traced_test]
 fn integration_test() {
     // let sdl = fs::read_to_string("/Users/dkuc/Downloads/ascension.schema").unwrap();
     // let sdl = fs::read_to_string("/Users/dkuc/Development/composer-tool/yum_supergraph.graphql").unwrap();
