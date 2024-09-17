@@ -15,7 +15,7 @@ use sha1::Digest;
 const ROVER_FEDERATION_VERSION: &str = "2.7.4";
 
 // TODO: use 2.7 when join v0.4 is fully supported in this crate
-const IMPLICIT_LINK_DIRECTIVE: &str = r#"@link(url: "https://specs.apollo.dev/federation/v2.6", import: ["@key", "@requires", "@provides", "@external", "@tag", "@extends", "@shareable", "@inaccessible", "@override", "@composeDirective", "@interfaceObject"])"#;
+const IMPLICIT_LINK_DIRECTIVE: &str = r#"@link(url: "https://specs.apollo.dev/federation/v2.7", import: ["@key", "@requires", "@provides", "@external", "@tag", "@extends", "@shareable", "@inaccessible", "@override", "@composeDirective", "@interfaceObject"])"#;
 
 /// Runs composition on the given subgraph schemas and return `(api_schema, query_planner)`
 ///
@@ -60,7 +60,7 @@ macro_rules! subgraph_name {
 /// formatted query plan string.
 /// Run `cargo insta review` to diff and accept changes to the generated query plan.
 macro_rules! assert_plan {
-    ($api_schema_and_planner: expr, $operation: expr, @$expected: literal) => {{
+    ($api_schema_and_planner: expr, $operation: expr, $options: expr, @$expected: literal) => {{
         let (api_schema, planner) = $api_schema_and_planner;
         let document = apollo_compiler::ExecutableDocument::parse_and_validate(
             api_schema.schema(),
@@ -68,7 +68,19 @@ macro_rules! assert_plan {
             "operation.graphql",
         )
         .unwrap();
-        let plan = planner.build_query_plan(&document, None).unwrap();
+        let plan = planner.build_query_plan(&document, None, Some($options)).unwrap();
+        insta::assert_snapshot!(plan, @$expected);
+        plan
+    }};
+        ($api_schema_and_planner: expr, $operation: expr, @$expected: literal) => {{
+        let (api_schema, planner) = $api_schema_and_planner;
+        let document = apollo_compiler::ExecutableDocument::parse_and_validate(
+            api_schema.schema(),
+            $operation,
+            "operation.graphql",
+        )
+        .unwrap();
+        let plan = planner.build_query_plan(&document, None, None).unwrap();
         insta::assert_snapshot!(plan, @$expected);
         plan
     }};

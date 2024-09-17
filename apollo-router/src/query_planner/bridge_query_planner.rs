@@ -290,11 +290,12 @@ impl PlannerMode {
             PlannerMode::Rust(rust) => {
                 let start = Instant::now();
 
+                // TODO pass conditions
                 let result = operation
                     .as_deref()
                     .map(|n| Name::new(n).map_err(FederationError::from))
                     .transpose()
-                    .and_then(|operation| rust.build_query_plan(&doc.executable, operation))
+                    .and_then(|operation| rust.build_query_plan(&doc.executable, operation, None))
                     .map_err(|e| QueryPlannerError::FederationError(e.to_string()));
 
                 let elapsed = start.elapsed().as_secs_f64();
